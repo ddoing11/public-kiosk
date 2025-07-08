@@ -10,6 +10,7 @@ python -m venv venv
 
 # 3. 패키지 설치
 pip install -r requirements.txt
+\`\`\`
 
 
 ## 매일 작업할 때
@@ -25,6 +26,7 @@ python manage.py runserver
 git add .
 git commit -m "커밋 메시지"
 git push origin main
+\`\`\`
 
 ## 추가 유용한 명령어
 ```bash
@@ -33,3 +35,4 @@ git pull origin main
 
 # 서버 중지
 Ctrl + C
+\`\`\`

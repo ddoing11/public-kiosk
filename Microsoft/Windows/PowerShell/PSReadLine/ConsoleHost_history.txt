@@ -30,3 +30,48 @@ echo .env >> .gitignore
 git rm -r --cached venv/
 git status
 git add .
+git rm -r --cached venv/
+git add .
+git status
+git rm --cached -r Microsoft/`
+git rm --cached -r pip/`
+git rm --cached db.sqlite3`
+git rm --cached -r mysite/__pycache__/
+echo venv/ > .gitignore`
+echo __pycache__/ >> .gitignore`
+echo *.pyc >> .gitignore`
+echo db.sqlite3 >> .gitignore`
+echo .env >> .gitignore`
+echo Microsoft/ >> .gitignore`
+echo pip/ >> .gitignore
+git add .gitignore`
+git add manage.py`
+git add mysite/*.py
+git commit -m "장고 서버까지"
+git config --global user.email "kjeg9580@naver.com"
+git config user.email "kjeg9580@naver.com"`
+git config user.name "ddoing11"
+git commit -m "장고 서버까지"
+git push origin main
+(venv) PS C:\Users\박미숙\Desktop\public_kiosk> git config user.email "kjeg9580@naver.com"`
+>> git config user.name "ddoing11"`
+(venv) PS C:\Users\박미숙\Desktop\public_kiosk> git commit -m "장고 서버까지"`
+[master (root-commit) 401e576] 장고 서버까지`
+ 9 files changed, 230 insertions(+)`
+ create mode 100644 .gitignore`
+ create mode 100644 Microsoft/Windows/PowerShell/ModuleAnalysisCache`
+ create mode 100644 Microsoft/Windows/PowerShell/PSReadLine/ConsoleHost_history.txt    `
+ create mode 100644 manage.py`
+ create mode 100644 mysite/__init__.py`
+ create mode 100644 mysite/asgi.py`
+ create mode 100644 mysite/settings.py`
+ create mode 100644 mysite/urls.py`
+ create mode 100644 mysite/wsgi.py`
+(venv) PS C:\Users\박미숙\Desktop\public_kiosk> git push origin main`
+error: src refspec main does not match any`
+error: failed to push some refs to 'origin'`
+(venv) PS C:\Users\박미숙\Desktop\public_kiosk> git branch -M main
+git branch -M main
+git push -u origin main
+git remote add origin https://github.com/ddoing11/public-kiosk.git
+git push -u origin main

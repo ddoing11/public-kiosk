@@ -1,0 +1,32 @@
+code .
+python manage.py runserver
+venv\Scripts\activate
+python manage.py runserver
+python manage.py migrate
+cd ..
+ren new_django_project public_kiosk
+deactivate
+ren new_django_project public_kiosk
+venv\Scripts\activate
+python manage.py runserver
+bash# 1. Git 초기화`
+
+git init
+echo venv/ > .gitignore
+echo __pycache__/ >> .gitignore
+echo *.pyc >> .gitignore
+echo db.sqlite3 >> .gitignore
+echo .env >> .gitignore
+echo *.log >> .gitignore
+git add .
+# 현재 Git 상태 확인`
+git status
+git rm -r --cached venv/
+echo venv/ > .gitignore`
+echo __pycache__/ >> .gitignore`
+echo *.pyc >> .gitignore`
+echo db.sqlite3 >> .gitignore`
+echo .env >> .gitignore
+git rm -r --cached venv/
+git status
+git add .

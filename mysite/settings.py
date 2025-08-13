@@ -74,8 +74,15 @@ WSGI_APPLICATION = 'mysite.wsgi.application'
 
 DATABASES = {
     'default': {
-        'ENGINE': 'django.db.backends.sqlite3',
-        'NAME': BASE_DIR / 'db.sqlite3',
+        'ENGINE': 'django.db.backends.mysql',
+        'NAME': 'grihKioskPrj',        
+        'USER': 'grih',      
+        'PASSWORD': 'qorhvms4dlsqkd',
+        'HOST': 'tagorder.iptime.org',  # localhost에서 변경
+        'PORT': '61426',                # 3306에서 변경
+        'OPTIONS': {
+            'charset': 'utf8mb4',       
+        },
     }
 }
 

@@ -11,25 +11,40 @@ logger = logging.getLogger('kiosk')
 # OpenAI 클라이언트 초기화
 client = OpenAI(api_key=getattr(settings, 'OPENAI_API_KEY', ''))
 
-SYSTEM_PROMPT = """너는 병원 서류 출력 키오스크 상담원입니다. 
+# 🔥 수정된 시스템 프롬프트 - 상담의 올바른 역할 정의
+SYSTEM_PROMPT = """너는 병원 키오스크 상담 도우미입니다.
 
-규칙:
-- 짧고 핵심적으로 답변하세요 (한두 문장 단위)
-- 서류 발급 절차, 이용방법, 오류대응을 단계적으로 간단히 설명
-- 감탄사나 이모지는 사용하지 마세요
+역할:
+- 사용자가 원하는 목적(보험 청구, 회사 제출 등)에 필요한 서류를 안내
+- 키오스크 사용법 설명  
+- 서류별 용도와 차이점 설명
+- 직접 서류 발급은 하지 않음
+
+답변 규칙:
+- 짧고 핵심적으로 답변 (1-2문장)
+- 친절하고 전문적인 톤 유지
+- 감탄사나 이모지 사용하지 마세요
 - 음성합성을 위해 문장을 지나치게 길게 만들지 마세요
-- 친절하고 전문적인 톤을 유지하세요
 
 주요 안내 사항:
-- 진료확인서, 소견서, 진단서 등 각종 서류 발급 가능
-- 신분증과 진료카드 지참 필수
-- 수수료는 서류 종류에 따라 상이
-- 발급 소요시간은 보통 5-10분
+- 진료확인서: 단순 진료 사실 확인 (보험청구, 회사제출)
+- 소견서: 의사의 의학적 소견 포함 (상세한 보험청구)  
+- 진단서: 정확한 진단명과 치료계획 (중요한 보험, 법적 용도)
+- 처방전: 약물 처방 내역
+
+상담 종료 조건:
+사용자가 "감사합니다", "알겠습니다", "이해했습니다", "충분합니다", "됐습니다" 등을 말하면 반드시 다음 멘트로 상담 종료:
+"도움이 되셨기를 바랍니다. 원하시는 서류를 발급받으시려면 주민번호 앞 6자리를 입력하시면 서류 발급이 가능합니다. 감사합니다!"
 """
 
 async def azure_text_to_speech(text, websocket=None):
-    """Azure TTS를 사용한 음성 합성"""
+    """Azure TTS를 사용한 음성 합성 - 자기 음성 인식 방지 개선"""
     try:
+        # 🔥 TTS 시작 전 마이크 완전히 끄기
+        if websocket:
+            await websocket.send_message('mic.off')
+            await asyncio.sleep(0.2)  # 마이크 끄기 확실히 대기
+        
         # Azure Speech 설정
         speech_key = getattr(settings, 'AZURE_SPEECH_KEY', '')
         speech_region = getattr(settings, 'AZURE_SPEECH_REGION', '')
@@ -60,9 +75,13 @@ async def azure_text_to_speech(text, websocket=None):
         success = await asyncio.get_event_loop().run_in_executor(None, synthesis_task)
         
         if success:
-            # TTS 완료 후 띵 소리 재생
+            # 🔥 TTS 완료 후 적절한 지연 (너무 길지 않게 조정)
+            text_delay = 0.1
+            await asyncio.sleep(text_delay)
+            
+            # 띵 소리 재생
             await play_ding_sound(websocket)
-            await asyncio.sleep(0.1)  # 100ms 지연
+            await asyncio.sleep(0.3)  # 띵 소리 후 짧은 지연
             
             # 마이크 켜기
             if websocket:
@@ -75,13 +94,25 @@ async def azure_text_to_speech(text, websocket=None):
         return await browser_fallback_tts(text, websocket)
 
 async def browser_fallback_tts(text, websocket):
-    """브라우저 TTS 폴백"""
+    """브라우저 TTS 폴백 - 자기 음성 인식 방지 개선"""
     logger.info("브라우저 TTS 폴백 사용")
     if websocket:
+        # 마이크 끄기
+        await websocket.send_message('mic.off')
+        await asyncio.sleep(0.2)
+        
+        # TTS 실행
         await websocket.send_message('tts.say', {'text': text})
-        await asyncio.sleep(len(text) * 0.05)  # 대략적인 TTS 시간 추정
+        
+        # 🔥 적절한 대기 시간 (브라우저 TTS도 짧게 조정)
+        text_delay = min(3.0, max(1.0, len(text) * 0.04))  # 최소 1초, 최대 3초
+        await asyncio.sleep(text_delay)
+        
+        # 띵 소리 재생
         await play_ding_sound(websocket)
-        await asyncio.sleep(0.1)
+        await asyncio.sleep(0.3)
+        
+        # 마이크 켜기
         await websocket.send_message('mic.on')
     return True
 
@@ -174,3 +205,21 @@ def is_consultation_request(text):
     consultation_keywords = ['상담', '문의', '질문', '도움', '안내']
     text = text.lower().strip()
     return any(keyword in text for keyword in consultation_keywords)
+
+# 🔥 새로 추가된 함수들
+def is_consultation_end_request(text):
+    """상담 종료 요청 감지"""
+    end_keywords = ['감사합니다', '고맙습니다', '알겠습니다', '이해했습니다', 
+                   '종료', '끝', '그만', '충분합니다', '됐습니다', '고마워요', '알겠어요']
+    text = text.lower().strip()
+    return any(keyword in text for keyword in end_keywords)
+
+def is_simple_agreement(text):
+    """단순 동의 표현 감지 (네, 예, 응 등) - 개선된 버전"""
+    agreement_keywords = ['네', '예', '응', '어', '맞아요', '맞습니다', '그럼요', '오케이', '알았어요']
+    
+    # 마침표, 쉼표 등 제거 후 정규화
+    clean_text = re.sub(r'[.,!?]', '', text.lower().strip())
+    
+    # 정확히 일치하거나 매우 짧은 동의 표현
+    return clean_text in agreement_keywords or (len(clean_text) <= 2 and any(keyword in clean_text for keyword in ['네', '예', '응', '어']))

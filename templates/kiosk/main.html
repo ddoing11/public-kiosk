@@ -220,6 +220,7 @@
         // 전역 변수
         let isListening = false;
         let websocket = null;
+        let currentRecognition = null;
         
         // 페이지 로드 시 자동으로 WebSocket 연결 및 음성 안내 시작
         document.addEventListener('DOMContentLoaded', function() {
@@ -342,8 +343,12 @@
             isListening = true;
             document.getElementById('mic-indicator').classList.add('active');
             
-            // 여기서 실제 음성 인식 시작 (Web Speech API 또는 다른 STT)
-            startSpeechRecognition();
+            // 🔥 짧은 지연 후 음성 인식 시작 (TTS 완료 확실히 대기)
+            setTimeout(() => {
+                if (isListening) {
+                    startSpeechRecognition();
+                }
+            }, 300);
         }
         
         // 마이크 비활성화
@@ -356,28 +361,42 @@
             stopSpeechRecognition();
         }
         
-        // 음성 인식 시작 (Web Speech API 사용)
+        // 🔥 개선된 음성 인식 시작
         function startSpeechRecognition() {
             if (!('webkitSpeechRecognition' in window) && !('SpeechRecognition' in window)) {
                 console.warn('이 브라우저는 음성 인식을 지원하지 않습니다.');
                 return;
             }
             
+            // 기존 인식 중지
+            if (currentRecognition) {
+                currentRecognition.stop();
+            }
+            
             const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
-            const recognition = new SpeechRecognition();
+            currentRecognition = new SpeechRecognition();
             
-            recognition.lang = 'ko-KR';
-            recognition.interimResults = false;
-            recognition.maxAlternatives = 1;
-            recognition.continuous = false;
+            currentRecognition.lang = 'ko-KR';
+            currentRecognition.interimResults = false;
+            currentRecognition.maxAlternatives = 1;
+            currentRecognition.continuous = false;
             
-            recognition.onstart = function() {
+            // 🔥 더 긴 침묵 허용 시간 설정 (브라우저마다 다름)
+            // currentRecognition.speechTimeout = 3000;  // 일부 브라우저 지원
+            
+            currentRecognition.onstart = function() {
                 console.log('🎙️ 음성 인식 시작됨');
             };
             
-            recognition.onresult = function(event) {
+            currentRecognition.onresult = function(event) {
                 const result = event.results[0][0].transcript.trim();
                 console.log('🎤 인식된 텍스트:', result);
+                
+                // 🔥 너무 짧은 결과는 무시
+                if (result.length < 2) {
+                    console.log('너무 짧은 결과 무시:', result);
+                    return;
+                }
                 
                 // WebSocket으로 결과 전송
                 if (websocket && websocket.readyState === WebSocket.OPEN) {
@@ -388,26 +407,44 @@
                 }
             };
             
-            recognition.onerror = function(event) {
+            currentRecognition.onerror = function(event) {
                 console.error('❌ 음성 인식 오류:', event.error);
-                updateConsultationStatus('음성 인식 오류: ' + event.error);
-            };
-            
-            recognition.onend = function() {
-                console.log('🛑 음성 인식 종료됨');
-                // 계속 listening 상태면 다시 시작
-                if (isListening) {
-                    setTimeout(startSpeechRecognition, 100);
+                
+                // 🔥 no-speech 오류는 정상적인 상황으로 처리
+                if (event.error === 'no-speech') {
+                    console.log('음성이 감지되지 않음 - 대기 상태 유지');
+                } else {
+                    updateConsultationStatus('음성 인식 오류: ' + event.error);
                 }
             };
             
-            recognition.start();
+            currentRecognition.onend = function() {
+                console.log('🛑 음성 인식 종료됨');
+                
+                // 🔥 더 긴 지연 후 재시작 (무한 루프 방지)
+                if (isListening) {
+                    setTimeout(() => {
+                        if (isListening) {
+                            startSpeechRecognition();
+                        }
+                    }, 500);  // 500ms 지연
+                }
+            };
+            
+            try {
+                currentRecognition.start();
+            } catch (error) {
+                console.error('음성 인식 시작 실패:', error);
+            }
         }
         
         // 음성 인식 중지
         function stopSpeechRecognition() {
-            // 음성 인식 중지 로직
             console.log('🛑 음성 인식 중지');
+            if (currentRecognition) {
+                currentRecognition.stop();
+                currentRecognition = null;
+            }
         }
         
         // 브라우저 TTS (Azure TTS 폴백용)
@@ -416,6 +453,13 @@
                 const utterance = new SpeechSynthesisUtterance(text);
                 utterance.lang = 'ko-KR';
                 utterance.rate = 0.9;
+                utterance.volume = 0.8;
+                
+                // 🔥 TTS 완료 후 처리
+                utterance.onend = function() {
+                    console.log('브라우저 TTS 완료');
+                };
+                
                 speechSynthesis.speak(utterance);
             }
         }
@@ -479,13 +523,3 @@
     </script>
 </body>
 </html>
-
-<!-- 
-주석: 메인 서비스 화면
-- 주민번호 입력 기능
-- 음성 상담 기능  
-- WebSocket 연결 및 실시간 통신
-- GPT 스트리밍 응답 표시
-- 마이크 상태 시각화
-- TTS 음성 안내
--->

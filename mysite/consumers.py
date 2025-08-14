@@ -34,7 +34,7 @@ class KioskWebSocketConsumer(AsyncWebsocketConsumer):
             await self.send_message('mic.off')
             
             # Azure TTS로 안내 멘트 출력
-            guidance_text = "주민번호 앞 6자리를 입력하여 서류 출력 서비스로 이동하시거나 띵 소리 이후 '상담'이라고 말씀해주세요."
+            guidance_text = "주민번호 앞 여섯자리를 입력하여 서류 출력 서비스로 이동하시거나 띵 소리 이후 '상담'이라고 말씀해주세요."
             
             # Azure TTS 실행 (내부에서 띵 소리 + 마이크 ON 처리)
             await azure_text_to_speech(guidance_text, self)
@@ -129,7 +129,7 @@ class KioskWebSocketConsumer(AsyncWebsocketConsumer):
     async def send_guidance_retry(self):
         """재안내 메시지"""
         await self.send_message('mic.off')
-        retry_text = "주민번호 앞 6자리를 입력하시거나 '상담'이라고 말씀해주세요."
+        retry_text = "주민번호 앞 여섯자리를 입력하시거나 '상담'이라고 말씀해주세요."
         await azure_text_to_speech(retry_text, self)
 
     async def send_message(self, msg_type, data=None):

@@ -1,6 +1,7 @@
 import asyncio
 import logging
 import threading
+import re
 from django.conf import settings
 from openai import OpenAI
 import azure.cognitiveservices.speech as speechsdk
@@ -123,10 +124,7 @@ async def get_gpt_streaming_response(user_input):
 
 def validate_id_format(id_string):
     """주민번호 앞 6자리 유효성 검사"""
-    import re
-    
-    if not re.match(r'^\d{6}
-, id_string):
+    if not re.match(r'^\d{6}$', id_string):
         return False, "6자리 숫자가 아닙니다"
     
     try:

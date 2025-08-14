@@ -1,0 +1,125 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>병원 서류 출력 키오스크 - 서비스 선택</title>
+    <style>
+        /* 최소 스타일링 - 프론트 담당 단계에서 개선 예정 */
+        body {
+            font-family: Arial, sans-serif;
+            margin: 0;
+            padding: 20px;
+            background-color: #f5f5f5;
+        }
+        .container {
+            max-width: 800px;
+            margin: 0 auto;
+            background: white;
+            padding: 40px;
+            border-radius: 10px;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+        }
+        .service-button {
+            display: block;
+            width: 100%;
+            padding: 20px;
+            margin: 15px 0;
+            font-size: 18px;
+            background-color: #007bff;
+            color: white;
+            border: none;
+            border-radius: 5px;
+            cursor: pointer;
+            text-align: left;
+        }
+        .service-button:hover {
+            background-color: #0056b3;
+        }
+        .back-button {
+            background-color: #6c757d;
+            color: white;
+            padding: 10px 20px;
+            border: none;
+            border-radius: 5px;
+            cursor: pointer;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>서비스 선택(스켈레톤)</h1>
+        <p>원하시는 서비스를 선택해주세요.</p>
+        
+        <!-- 임시 서비스 목록 - 실제 구현에서 확장 예정 -->
+        <button class="service-button">
+            📄 진료확인서 발급
+            <small style="display: block; margin-top: 5px; color: #ccc;">
+                진료 내역 확인서 출력 (수수료: 1,000원)
+            </small>
+        </button>
+        
+        <button class="service-button">
+            📋 소견서 발급  
+            <small style="display: block; margin-top: 5px; color: #ccc;">
+                의사 소견서 출력 (수수료: 3,000원)
+            </small>
+        </button>
+        
+        <button class="service-button">
+            🏥 진단서 발급
+            <small style="display: block; margin-top: 5px; color: #ccc;">
+                진단서 출력 (수수료: 10,000원)
+            </small>
+        </button>
+        
+        <button class="service-button">
+            💊 처방전 재발급
+            <small style="display: block; margin-top: 5px; color: #ccc;">
+                분실한 처방전 재발급 (수수료: 500원)
+            </small>
+        </button>
+        
+        <button class="service-button">
+            📞 상담 서비스
+            <small style="display: block; margin-top: 5px; color: #ccc;">
+                음성 상담을 통한 도움말
+            </small>
+        </button>
+        
+        <div style="margin-top: 30px;">
+            <button class="back-button" onclick="history.back()">
+                ← 이전으로
+            </button>
+        </div>
+        
+        <!-- 상태 표시 (개발용) -->
+        <div id="status" style="margin-top: 20px; padding: 10px; background: #e9ecef; border-radius: 5px;">
+            상태: 서비스 선택 대기 중
+        </div>
+    </div>
+
+    <script>
+        // 서비스 버튼 클릭 이벤트 (임시)
+        document.querySelectorAll('.service-button').forEach(button => {
+            button.addEventListener('click', function() {
+                const serviceName = this.textContent.trim().split('\n')[0];
+                document.getElementById('status').textContent = `상태: ${serviceName} 선택됨`;
+                
+                // 실제 구현에서는 각 서비스별 플로우로 이동
+                console.log('서비스 선택:', serviceName);
+            });
+        });
+    </script>
+</body>
+</html>
+
+<!-- 
+주석: 실제 구현에서 추가될 기능들
+- 각 서비스별 상세 플로우
+- 결제 시스템 연동  
+- 프린터 연동
+- 진료카드/신분증 인식
+- 실시간 대기열 표시
+- 접근성 개선 (음성 안내, 큰 글씨 등)
+-->

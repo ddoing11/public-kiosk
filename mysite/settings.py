@@ -11,6 +11,11 @@ https://docs.djangoproject.com/en/5.2/ref/settings/
 """
 
 from pathlib import Path
+import os
+from dotenv import load_dotenv
+
+# .env 파일 로드
+load_dotenv()
 
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
 BASE_DIR = Path(__file__).resolve().parent.parent
@@ -37,6 +42,7 @@ INSTALLED_APPS = [
     'django.contrib.sessions',
     'django.contrib.messages',
     'django.contrib.staticfiles',
+    'channels',  # WebSocket 지원
 ]
 
 MIDDLEWARE = [
@@ -54,7 +60,7 @@ ROOT_URLCONF = 'mysite.urls'
 TEMPLATES = [
     {
         'BACKEND': 'django.template.backends.django.DjangoTemplates',
-        'DIRS': [],
+        'DIRS': [BASE_DIR / 'templates'],  # 키오스크 템플릿 디렉토리 추가
         'APP_DIRS': True,
         'OPTIONS': {
             'context_processors': [
@@ -67,6 +73,7 @@ TEMPLATES = [
 ]
 
 WSGI_APPLICATION = 'mysite.wsgi.application'
+ASGI_APPLICATION = 'mysite.asgi.application'  # WebSocket 지원
 
 
 # Database
@@ -122,8 +129,105 @@ USE_TZ = True
 # https://docs.djangoproject.com/en/5.2/howto/static-files/
 
 STATIC_URL = 'static/'
-
+STATIC_ROOT = BASE_DIR / 'staticfiles'  # 👈 이 줄 추가!
+STATICFILES_DIRS = [
+    BASE_DIR / 'static',  # 키오스크 정적 파일 디렉토리
+]
 # Default primary key field type
 # https://docs.djangoproject.com/en/5.2/ref/settings/#default-auto-field
 
 DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
+
+
+# ==========================================
+# 키오스크 관련 설정 추가
+# ==========================================
+
+# WebSocket 설정
+CHANNEL_LAYERS = {
+    'default': {
+        'BACKEND': 'channels.layers.InMemoryChannelLayer',
+        # 운영환경에서는 Redis 사용 권장:
+        # 'BACKEND': 'channels_redis.core.RedisChannelLayer',
+        # 'CONFIG': {
+        #     'hosts': [os.environ.get('REDIS_URL', 'redis://localhost:6379')],
+        # },
+    },
+}
+
+# LLM 설정
+LLM_PROVIDER = os.environ.get('LLM_PROVIDER', 'openai')
+LLM_MODEL = os.environ.get('LLM_MODEL', 'gpt-4o-mini')
+OPENAI_API_KEY = os.environ.get('OPENAI_API_KEY', '')
+
+if not OPENAI_API_KEY and LLM_PROVIDER == 'openai':
+    print("⚠️ 경고: OPENAI_API_KEY가 설정되지 않았습니다.")
+
+# TTS 설정
+TTS_PROVIDER = os.environ.get('TTS_PROVIDER', 'azure')
+AZURE_SPEECH_KEY = os.environ.get('AZURE_SPEECH_KEY', '')
+AZURE_SPEECH_REGION = os.environ.get('AZURE_SPEECH_REGION', '')
+
+# STT 설정
+STT_MODE = os.environ.get('STT_MODE', 'webspeech')
+
+# 키오스크 관련 설정
+KIOSK_SETTINGS = {
+    'WEBSOCKET_PORT': int(os.environ.get('KIOSK_WEBSOCKET_PORT', 8000)),
+    'SESSION_TIMEOUT': int(os.environ.get('KIOSK_SESSION_TIMEOUT', 300)),
+    'LOG_LEVEL': os.environ.get('KIOSK_LOG_LEVEL', 'INFO'),
+    'MAX_CONVERSATION_HISTORY': 10,
+    'GPT_STREAMING_CHUNK_SIZE': 1024,
+    'AUDIO_DING_PATH': 'static/audio/ding.wav',
+}
+
+# 로깅 설정
+LOG_DIR = BASE_DIR / 'logs'  # Path 객체 방식으로 수정
+LOG_DIR.mkdir(exist_ok=True)  # 디렉토리 생성
+
+LOGGING = {
+    'version': 1,
+    'disable_existing_loggers': False,
+    'formatters': {
+        'verbose': {
+            'format': '{levelname} {asctime} {module} {process:d} {thread:d} {message}',
+            'style': '{',
+        },
+        'simple': {
+            'format': '{levelname} {message}',
+            'style': '{',
+        },
+    },
+    'handlers': {
+        'file': {
+            'level': 'INFO',
+            'class': 'logging.FileHandler',
+            'filename': LOG_DIR / 'kiosk.log',  # Path 객체 방식
+            'formatter': 'verbose',
+        },
+        'console': {
+            'level': 'DEBUG',
+            'class': 'logging.StreamHandler',
+            'formatter': 'simple',
+        },
+    },
+    'loggers': {
+        'kiosk': {
+            'handlers': ['file', 'console'],
+            'level': os.environ.get('LOG_LEVEL', 'INFO'),
+            'propagate': False,
+        },
+        'django': {
+            'handlers': ['console'],
+            'level': 'INFO',
+        },
+    },
+}
+
+# 키오스크 보안 설정
+KIOSK_SECURITY = {
+    'MAX_ID_VERIFY_ATTEMPTS': 3,
+    'ID_VERIFY_COOLDOWN': 60,  # 초
+    'LOG_PERSONAL_INFO': False,  # 개인정보 로깅 금지
+    'MASK_LOG_CHARS': 2,  # 로그에서 보여줄 문자 수
+}

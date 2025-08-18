@@ -171,7 +171,7 @@ LLM_MODEL = os.environ.get('LLM_MODEL', 'gpt-4o-mini')
 OPENAI_API_KEY = os.environ.get('OPENAI_API_KEY', '')
 
 if not OPENAI_API_KEY and LLM_PROVIDER == 'openai':
-    print("⚠️ 경고: OPENAI_API_KEY가 설정되지 않았습니다.")
+    print("경고: OPENAI_API_KEY가 설정되지 않았습니다.")
 
 # TTS 설정
 TTS_PROVIDER = os.environ.get('TTS_PROVIDER', 'azure')

@@ -20,7 +20,7 @@ class KioskWebSocketConsumer(AsyncWebsocketConsumer):
     async def connect(self):
         await self.accept()
         self.client_state = self.state_manager.create_initial_state()
-        # 🔥 재안내 횟수 추가
+      
         self.client_state['retry_count'] = 0
         self.client_state['max_retries'] = 2  # 최대 2번까지만 재안내
         logger.info("WebSocket client connected")
@@ -87,13 +87,13 @@ class KioskWebSocketConsumer(AsyncWebsocketConsumer):
         
         logger.info(f"STT 결과 처리: '{text}', 현재 단계: {current_step}")
         
-        # 🔥 빈 텍스트나 너무 짧은 텍스트는 무시
+        # 빈 텍스트나 너무 짧은 텍스트는 무시
         if len(text.strip()) < 2:
             logger.info(f"너무 짧은 텍스트 무시: '{text}'")
             return
         
-        # 🔥 TTS 관련 텍스트 필터링 (자기 음성 인식 방지)
-        # 🔥 더 정확한 TTS 텍스트 필터링
+        # TTS 관련 텍스트 필터링 (자기 음성 인식 방지)
+        # 더 정확한 TTS 텍스트 필터링
         tts_phrases = ['무엇을 도와드릴', '목적에 따라 필요한', '원하시는 목적을', '안내해 드리겠습니다']
         if any(phrase in text for phrase in tts_phrases):
             logger.info(f"TTS 음성 인식 감지 - 무시: '{text}'")
@@ -115,17 +115,17 @@ class KioskWebSocketConsumer(AsyncWebsocketConsumer):
             logger.info(f"listening 상태가 아님 - 무시: {current_step}")
             return
         
-        # 🔥 1. 단순 동의 표현인지 먼저 확인 ("네", "예" 등)
+        # 1. 단순 동의 표현인지 먼저 확인 ("네", "예" 등)
         if is_simple_agreement(text):
             await self.handle_simple_agreement()
             return
             
-        # 🔥 2. 상담 요청인지 확인
+        # 2. 상담 요청인지 확인
         if is_consultation_request(text):
             await self.start_consultation(text)
             return
         
-        # 🔥 3. 의미있는 발화가 있는 경우 → 상담으로 처리 (길이 3자 이상)
+        # 3. 의미있는 발화가 있는 경우 → 상담으로 처리 (길이 3자 이상)
         if len(text.strip()) >= 3:
             logger.info(f"의미있는 발화를 상담으로 처리: '{text}'")
             await self.start_consultation(text)
@@ -135,7 +135,7 @@ class KioskWebSocketConsumer(AsyncWebsocketConsumer):
         logger.info(f"의미없는 발화 무시: '{text}'")
 
     async def handle_simple_agreement(self):
-        """🔥 단순 동의 표현 처리 ("네", "예" 등) - 무시"""
+        """단순 동의 표현 처리 ("네", "예" 등) - 무시"""
         logger.info("단순 동의 표현 감지 - 무시하고 대기 상태 유지")
         # 아무 처리도 하지 않음 - 사용자가 주민번호 입력하거나 상담 요청할 때까지 대기
 
@@ -144,7 +144,7 @@ class KioskWebSocketConsumer(AsyncWebsocketConsumer):
         logger.debug(f"STT partial: {text}")
 
     async def start_consultation(self, user_input):
-        """🔥 상담 모드 진입"""
+        """상담 모드 진입"""
         self.client_state['step'] = 'advising'
         self.client_state['retry_count'] = 0  # 재안내 카운터 리셋
         await self.send_message('status', {'state': 'advising'})
@@ -161,10 +161,10 @@ class KioskWebSocketConsumer(AsyncWebsocketConsumer):
                     # 전체 응답을 Azure TTS로 읽기
                     full_response = ''.join(response_chunks)
                     if full_response.strip():
-                        # 🔥 상담 종료 멘트가 포함되어 있는지 확인
+                        # 상담 종료 멘트가 포함되어 있는지 확인
                         if "주민번호 앞 여섯자리를 입력하시면" in full_response:
                             await azure_text_to_speech(full_response, self)
-                            # 🔥 바로 listening 상태로 복귀
+                            # 바로 listening 상태로 복귀
                             await asyncio.sleep(0.5)
                             self.client_state['step'] = 'listening'
                             await self.send_message('status', {'state': 'listening'})
@@ -184,7 +184,7 @@ class KioskWebSocketConsumer(AsyncWebsocketConsumer):
             await self.finish_consultation()
 
     async def continue_consultation(self, user_input):
-        """🔥 상담 계속 진행"""
+        """상담 계속 진행"""
         # 마이크 끄기
         await self.send_message('mic.off')
         
@@ -198,7 +198,7 @@ class KioskWebSocketConsumer(AsyncWebsocketConsumer):
                         # 상담 종료 멘트 확인
                         if "주민번호 앞 여섯자리를 입력하시면" in full_response:
                             await azure_text_to_speech(full_response, self)
-                            # 🔥 바로 listening 상태로 복귀
+                            # 바로 listening 상태로 복귀
                             await asyncio.sleep(0.5)
                             self.client_state['step'] = 'listening'
                             await self.send_message('status', {'state': 'listening'})
@@ -218,34 +218,34 @@ class KioskWebSocketConsumer(AsyncWebsocketConsumer):
             await self.finish_consultation()
 
     async def end_consultation_with_guidance(self):
-        """🔥 상담 종료 및 서류발급 안내 - 바로 listening 상태로 복귀"""
+        """상담 종료 및 서류발급 안내 - 바로 listening 상태로 복귀"""
         await self.send_message('mic.off')
         
         end_message = "도움이 되셨기를 바랍니다. 원하시는 서류를 발급받으시려면 주민번호 앞 여섯자리를 입력하시면 서류 발급이 가능합니다. 감사합니다!"
         
         await azure_text_to_speech(end_message, self)
         
-        # 🔥 바로 listening으로 복귀
+        # 바로 listening으로 복귀
         await asyncio.sleep(0.5)
         self.client_state['step'] = 'listening'  # 다시 상담 가능
         await self.send_message('status', {'state': 'listening'})
         logger.info("상담 종료 - 다시 상담 가능 상태")
 
     async def finish_consultation(self):
-        """🔥 상담 완료 후 복귀 (계속 상담 가능)"""
+        """상담 완료 후 복귀 (계속 상담 가능)"""
         await asyncio.sleep(0.5)
         self.client_state['step'] = 'advising'  # 상담 상태 유지
         await self.send_message('status', {'state': 'advising'})
 
     async def return_to_initial_state(self):
-        """🔥 초기 상태로 완전 복귀"""
+        """초기 상태로 완전 복귀"""
         await asyncio.sleep(1.0)
         self.client_state['step'] = 'listening'
         self.client_state['retry_count'] = 0
         await self.send_message('status', {'state': 'listening'})
 
     async def send_guidance_retry(self):
-        """🔥 재안내 메시지 (거의 사용되지 않음)"""
+        """재안내 메시지 (거의 사용되지 않음)"""
         retry_count = self.client_state.get('retry_count', 0)
         
         if retry_count < self.client_state.get('max_retries', 1):  # 최대 1번만

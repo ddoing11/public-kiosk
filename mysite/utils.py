@@ -11,7 +11,7 @@ logger = logging.getLogger('kiosk')
 # OpenAI 클라이언트 초기화
 client = OpenAI(api_key=getattr(settings, 'OPENAI_API_KEY', ''))
 
-# 🔥 수정된 시스템 프롬프트 - 상담의 올바른 역할 정의
+
 SYSTEM_PROMPT = """너는 병원 키오스크 상담 도우미입니다.
 
 역할:
@@ -40,7 +40,7 @@ SYSTEM_PROMPT = """너는 병원 키오스크 상담 도우미입니다.
 async def azure_text_to_speech(text, websocket=None):
     """Azure TTS를 사용한 음성 합성 - 자기 음성 인식 방지 개선"""
     try:
-        # 🔥 TTS 시작 전 마이크 완전히 끄기
+        # TTS 시작 전 마이크 완전히 끄기
         if websocket:
             await websocket.send_message('mic.off')
             await asyncio.sleep(0.2)  # 마이크 끄기 확실히 대기
@@ -75,7 +75,7 @@ async def azure_text_to_speech(text, websocket=None):
         success = await asyncio.get_event_loop().run_in_executor(None, synthesis_task)
         
         if success:
-            # 🔥 TTS 완료 후 적절한 지연 (너무 길지 않게 조정)
+            # TTS 완료 후 적절한 지연 (너무 길지 않게 조정)
             text_delay = 0.1
             await asyncio.sleep(text_delay)
             
@@ -104,7 +104,7 @@ async def browser_fallback_tts(text, websocket):
         # TTS 실행
         await websocket.send_message('tts.say', {'text': text})
         
-        # 🔥 적절한 대기 시간 (브라우저 TTS도 짧게 조정)
+        # 적절한 대기 시간 (브라우저 TTS도 짧게 조정)
         text_delay = min(3.0, max(1.0, len(text) * 0.04))  # 최소 1초, 최대 3초
         await asyncio.sleep(text_delay)
         
@@ -206,7 +206,7 @@ def is_consultation_request(text):
     text = text.lower().strip()
     return any(keyword in text for keyword in consultation_keywords)
 
-# 🔥 새로 추가된 함수들
+
 def is_consultation_end_request(text):
     """상담 종료 요청 감지"""
     end_keywords = ['감사합니다', '고맙습니다', '알겠습니다', '이해했습니다', 

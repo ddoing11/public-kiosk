@@ -1,10 +1,11 @@
 import asyncio
 import logging
-import threading
 import re
 from django.conf import settings
 from openai import OpenAI
 import azure.cognitiveservices.speech as speechsdk
+from datetime import datetime
+
 
 logger = logging.getLogger('kiosk')
 
@@ -78,6 +79,7 @@ async def azure_text_to_speech(text, websocket=None):
             # TTS 완료 후 적절한 지연 (너무 길지 않게 조정)
             text_delay = 0.1
             await asyncio.sleep(text_delay)
+
             
             # 띵 소리 재생
             await play_ding_sound(websocket)
@@ -154,24 +156,14 @@ async def get_gpt_streaming_response(user_input):
         yield "", True
 
 def validate_id_format(id_string):
-    """주민번호 앞 6자리 유효성 검사"""
-    if not re.match(r'^\d{6}$', id_string):
+    """주민번호 앞 6자리(YYMMDD) 유효성 검사"""
+    if not re.fullmatch(r'\d{6}', id_string):
         return False, "6자리 숫자가 아닙니다"
-    
     try:
-        year = int(id_string[:4])
-        month = int(id_string[4:6])
-        
-        if not (1900 <= year <= 2099):
-            return False, "연도가 유효하지 않습니다"
-        
-        if not (1 <= month <= 12):
-            return False, "월이 유효하지 않습니다"
-            
+        datetime.strptime(id_string, "%y%m%d")
         return True, "유효함"
-        
     except ValueError:
-        return False, "숫자 변환 오류"
+        return False, "날짜 형식(YYMMDD)이 유효하지 않습니다"
 
 def mask_personal_info(text, show_chars=2):
     """개인정보 마스킹 (로그용)"""

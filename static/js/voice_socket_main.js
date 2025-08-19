@@ -1,34 +1,3 @@
-/**
- * 병원 서류 출력 키오스크 - WebSocket 클라이언트
- * 
- * === WebSocket 메시지 계약 (Event Contract) ===
- * 
- * 클라이언트 → 서버 (송신):
- * - {"type": "ui.touch_start"}                    // 화면 터치 시작
- * - {"type": "stt.result", "text": "상담"}        // STT 최종 결과  
- * - {"type": "stt.partial", "text": "상..."}      // STT 부분 결과 (옵션)
- * 
- * 서버 → 클라이언트 (수신):
- * - {"type": "tts.say", "text": "안내멘트"}       // TTS 음성 출력 요청
- * - {"type": "audio.ding"}                       // 띵 효과음 재생
- * - {"type": "mic.on"}                          // 마이크 켜기
- * - {"type": "mic.off"}                         // 마이크 끄기  
- * - {"type": "gpt.stream", "delta": "토큰"}      // GPT 스트리밍 토큰
- * - {"type": "gpt.stream", "event": "done"}     // GPT 응답 완료
- * - {"type": "status", "state": "listening"}    // 상태 알림
- * 
- * === 플로우 순서 보장 ===
- * 1. ui.touch_start → mic.off → tts.say → audio.ding → (50~100ms) → mic.on
- * 2. stt.result("상담") → gpt.stream(연속) → gpt.stream(done) → audio.ding → mic.on
- * 3. 에러 시 → tts.say(사과) → audio.ding → mic.on (복귀)
- * 
- * === 마이크·TTS 타이밍 규칙 ===
- * - 모든 TTS 전에 반드시 mic.off 먼저 실행
- * - TTS 완료 후 audio.ding → 50~100ms 지연 → mic.on
- * - 겹침 방지는 서버에서 플래그/상태로 보장
- * - 클라이언트는 mic.on/off 메시지에 따라 UI만 업데이트
- */
-
 // 전역 변수
 let kioskWebSocket = null;
 let microphoneActive = false;

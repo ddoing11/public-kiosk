@@ -1,62 +1,17 @@
-# mysite/service_consumers.py
 import json
 import asyncio
 import logging
 from channels.generic.websocket import AsyncWebsocketConsumer
 from django.conf import settings
 from openai import OpenAI
-from django.db import models
 from channels.db import database_sync_to_async
 from datetime import date, datetime
+from .models import Medical_Certificate, Prescription, MedicalReceipt
+
 
 
 logger = logging.getLogger('kiosk')
 client = OpenAI(api_key=getattr(settings, 'OPENAI_API_KEY', ''))
-
-# ✅ Medical_Certificate: id, patient_name, patient_id, gender, birth_date, contact, address
-class MedicalCertificate(models.Model):
-    patient_name = models.CharField(max_length=100, null=True, blank=True)
-    patient_id   = models.CharField(max_length=50,  null=True, blank=True)
-    gender       = models.CharField(max_length=1,   null=True, blank=True, choices=[('M','남성'),('F','여성')])
-    birth_date   = models.DateField(null=True, blank=True)
-    contact      = models.CharField(max_length=20,  null=True, blank=True)
-    address      = models.TextField(null=True, blank=True)
-
-    class Meta:
-        db_table  = 'Medical_Certificate'
-        app_label = 'mysite'
-        managed   = False
-
-# ✅ prescription: id, patient_name, patient_id, gender, birth_date, contact, prescription_date, doctor_name, department, hospital_name, notes
-class Prescription(models.Model):
-    patient_name      = models.CharField(max_length=100, null=True, blank=True)
-    patient_id        = models.CharField(max_length=50,  null=True, blank=True)
-    gender            = models.CharField(max_length=1,   null=True, blank=True, choices=[('M','남성'),('F','여성')])
-    birth_date        = models.DateField(null=True, blank=True)
-    contact           = models.CharField(max_length=20,  null=True, blank=True)
-    prescription_date = models.DateField(null=True, blank=True)
-    doctor_name       = models.CharField(max_length=100, null=True, blank=True)
-    department        = models.CharField(max_length=50,  null=True, blank=True)
-    hospital_name     = models.CharField(max_length=100, null=True, blank=True)
-    notes             = models.TextField(null=True, blank=True)
-
-    class Meta:
-        db_table  = 'prescription'
-        app_label = 'mysite'
-        managed   = False
-
-# ✅ medical_receipt: id, patient_name, patient_id, gender, birth_date, receipt_date
-class MedicalReceipt(models.Model):
-    patient_name = models.CharField(max_length=100, null=True, blank=True)
-    patient_id   = models.CharField(max_length=50,  null=True, blank=True)
-    gender       = models.CharField(max_length=1,   null=True, blank=True, choices=[('M','남성'),('F','여성')])
-    birth_date   = models.DateField(null=True, blank=True)
-    receipt_date = models.DateField(null=True, blank=True)
-
-    class Meta:
-        db_table  = 'medical_receipt'
-        app_label = 'mysite'
-        managed   = False
 
 
 class ServiceWebSocketConsumer(AsyncWebsocketConsumer):
@@ -65,7 +20,7 @@ class ServiceWebSocketConsumer(AsyncWebsocketConsumer):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.doc_type_model_map = {
-            "진료확인서": MedicalCertificate,
+            "진료확인서": Medical_Certificate,
             "처방전": Prescription,
             "진료영수증": MedicalReceipt,
         }
@@ -146,21 +101,13 @@ class ServiceWebSocketConsumer(AsyncWebsocketConsumer):
     async def start_voice_guidance(self):
         """음성 안내 시작"""
         try:
-            # 마이크 먼저 끄기
-            await self.send_message('mic.off')
-            
-            # Azure TTS로 안내 멘트 출력
+            # utils가 mic.off -> TTS -> audio.ding -> mic.on 순서로 전부 처리함
             guidance_text = "원하시는 서류를 말씀해주세요. 진료확인서, 처방전, 진료영수증 중에서 선택하실 수 있습니다."
-            
-            # Azure TTS 실행 (내부에서 띵 소리 + 마이크 ON 처리)
-            from .utils import azure_text_to_speech
-            await azure_text_to_speech(guidance_text, self)
-            
-            logger.info("Service guidance completed")
-            
+            await self.send_message('tts.text', {'text': guidance_text})
+            logger.info("Service guidance queued (client TTS)")
         except Exception as e:
             logger.error(f"Voice guidance error: {str(e)}")
-    
+            
     async def process_voice_input(self, text):
         """음성 입력을 GPT로 분석하여 서류 종류 판단"""
         try:
@@ -171,9 +118,7 @@ class ServiceWebSocketConsumer(AsyncWebsocketConsumer):
             doc_type = await self.analyze_document_type(text)
             
             if doc_type == "알수없음":
-                # 다시 안내
-                from .utils import azure_text_to_speech
-                await azure_text_to_speech('죄송합니다. 다시 한번 서류명을 말씀해주세요.', self)
+                await self.send_message('tts.text', {'text': '죄송합니다. 다시 한번 서류명을 말씀해주세요.'})
                 return
             
             # 문서 종류 인식 성공
@@ -242,33 +187,29 @@ class ServiceWebSocketConsumer(AsyncWebsocketConsumer):
         """사용자가 말한 서류 타입의 전체 목록을 DB에서 조회"""
         try:
             model_class = self.doc_type_model_map.get(doc_type)
-            from .utils import azure_text_to_speech
-
             if not model_class:
                 await self.send_message('db.results', {
                     'results': [],
                     'message': f'{doc_type}은(는) 준비 중인 서비스입니다.'
                 })
-                await azure_text_to_speech(f'{doc_type}은 준비 중인 서비스입니다.', self)
+                await self.send_message('tts.text', {'text': f'{doc_type}은 준비 중인 서비스입니다.'})
                 return
 
             field_map = self.FIELD_MAP.get(doc_type, [])
             results = await self.fetch_all_generic(model_class, field_map, limit=100)
 
-            # 결과 전송
             await self.send_message('db.results', {'results': results})
 
-            # 음성 안내
             if results:
-                await azure_text_to_speech(f"{doc_type} 리스트입니다. 총 {len(results)}건의 결과를 찾았습니다.", self)
-                await asyncio.sleep(1)
-                await azure_text_to_speech("날짜를 선택해 주세요.", self)
+                await self.send_message('tts.text', {'text': f"{doc_type} 리스트입니다. 총 {len(results)}건의 결과를 찾았습니다."})
+                # “날짜를 선택해 주세요.” 추가로 한 줄 더
+                await self.send_message('tts.text', {'text': "날짜를 선택해 주세요."})
             else:
-                await azure_text_to_speech(f"{doc_type} 조회 결과가 없습니다. 다른 서류를 선택해 주세요.", self)
-
+                await self.send_message('tts.text', {'text': f"{doc_type} 조회 결과가 없습니다. 다른 서류를 선택해 주세요."})
         except Exception:
             logger.exception("Database query error")
             await self.send_error("데이터베이스 조회 중 오류가 발생했습니다.")
+        
 
     async def send_message(self, msg_type, data=None):
         """클라이언트로 메시지 전송"""
@@ -280,8 +221,7 @@ class ServiceWebSocketConsumer(AsyncWebsocketConsumer):
     async def send_error(self, error_message):
         """에러 메시지 전송"""
         await self.send_message('error', {'message': error_message})
-        from .utils import azure_text_to_speech
-        await azure_text_to_speech(error_message, self)
+        await self.send_message('tts.text', {'text': error_message})
 
 
     @database_sync_to_async

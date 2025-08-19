@@ -4,6 +4,8 @@ import logging
 from django.shortcuts import render
 from django.http import JsonResponse
 from django.views.decorators.csrf import csrf_exempt
+import os, requests
+from django.conf import settings
 
 # 로거 설정
 logger = logging.getLogger('kiosk')
@@ -61,3 +63,18 @@ def id_verify(request):
 def services(request):
     """서비스 선택 페이지 (스켈레톤)"""
     return render(request, 'kiosk/services.html')
+
+def speech_token(request):
+    key = getattr(settings, 'AZURE_SPEECH_KEY', '')
+    region = getattr(settings, 'AZURE_SPEECH_REGION', '')
+    if not key or not region:
+        return JsonResponse({"error": "Azure speech key/region missing."}, status=500)
+
+    url = f"https://{region}.api.cognitive.microsoft.com/sts/v1.0/issueToken"
+    try:
+        r = requests.post(url, headers={"Ocp-Apim-Subscription-Key": key}, timeout=5)
+        r.raise_for_status()
+        return JsonResponse({"token": r.text, "region": region})
+    except Exception as e:
+        return JsonResponse({"error": f"Token issue failed: {e}"}, status=500)
+    

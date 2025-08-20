@@ -78,6 +78,12 @@ function handleMessage(data) {
         case 'tts.text':
             speakOnClient(data.text, deactivateMic, activateMic);
             break;
+        case 'mic.on':
+            activateMic();
+            break;
+        case 'mic.off':
+            deactivateMic();
+            break;
         case 'document.recognized':
             selectCard(data.document_type);
             updateVoiceStatus(`"${data.document_type}" 문서를 선택하셨습니다.`);

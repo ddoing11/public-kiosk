@@ -112,7 +112,6 @@ class ServiceWebSocketConsumer(AsyncWebsocketConsumer):
             
     async def process_voice_input(self, text):
         """음성 입력을 GPT로 분석하여 서류 종류 판단"""
-        await self.send_message('mic.off')
         doc_type = await self.analyze_document_type(text)
         
         if doc_type == "알수없음":
@@ -156,7 +155,7 @@ class ServiceWebSocketConsumer(AsyncWebsocketConsumer):
     
     async def process_service_selection(self, service_name):
         """서비스 직접 선택 처리 (카드 클릭)"""
-        await self.send_message('mic.off')
+       
         await self.query_database(service_name)
     
     async def query_database(self, doc_type):

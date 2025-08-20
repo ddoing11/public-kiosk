@@ -44,6 +44,7 @@ INSTALLED_APPS = [
     'django.contrib.messages',
     'django.contrib.staticfiles',
     'channels',  # WebSocket 지원
+    'auth_system',   
 ]
 
 MIDDLEWARE = [

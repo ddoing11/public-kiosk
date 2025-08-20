@@ -5,7 +5,7 @@ from channels.generic.websocket import AsyncWebsocketConsumer
 from django.conf import settings
 from .state_manager import StateManager
 from .utils import (
-    get_gpt_streaming_response, azure_text_to_speech, 
+    get_gpt_streaming_response, azure_text_to_speech, # azure_text_to_speech는 상담 응답용으로 남겨둡니다.
     is_consultation_request, is_consultation_end_request, is_simple_agreement
 )
 
@@ -32,24 +32,18 @@ class KioskWebSocketConsumer(AsyncWebsocketConsumer):
         logger.info(f"WebSocket client disconnected: {close_code}")
 
     async def start_automatic_guidance(self):
-        """페이지 접속 시 자동으로 안내 멘트 시작"""
+        """페이지 접속 시 자동으로 안내 멘트 시작 (클라이언트 TTS 방식으로 수정)"""
         try:
             self.client_state['step'] = 'prompting'
             
             # 마이크 먼저 끄기
             await self.send_message('mic.off')
             
-            # Azure TTS로 안내 멘트 출력
-            guidance_text = "주민번호 앞 여섯자리를 입력하여 서류 출력 서비스로 이동하시거나 띵 소리 이후 '상담'이라고 말씀해주세요."
-            
-            # Azure TTS 실행 (내부에서 띵 소리 + 마이크 ON 처리)
-            await azure_text_to_speech(guidance_text, self)
-            
-            # 상태를 listening으로 변경
-            self.client_state['step'] = 'listening'
-            await self.send_message('status', {'state': 'listening'})
-            
-            logger.info("Automatic guidance completed")
+            # 클라이언트에 TTS 요청 메시지 전송
+            guidance_text = "주민번호 앞 여섯자리를 입력하여 서류 출력 서비스로 이동하시거나 상담이 필요하시면 상담이라고 말씀해주세요."
+            await self.send_message('tts.text', {'text': guidance_text})
+        
+            logger.info("Automatic guidance message sent to client for TTS")
             
         except Exception as e:
             logger.error(f"Automatic guidance error: {str(e)}")

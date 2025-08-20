@@ -5,7 +5,7 @@ The `urlpatterns` list routes URLs to views. For more information please see:
     https://docs.djangoproject.com/en/5.2/topics/http/urls/
 """
 from django.contrib import admin
-from django.urls import path
+from django.urls import path, include
 from django.conf import settings 
 from django.conf.urls.static import static 
 from . import views
@@ -19,6 +19,7 @@ urlpatterns = [
     path('kiosk/main/', views.main, name='kiosk_main'),           # 메인화면 (주민번호 + 상담)
     path('kiosk/id-verify/', views.id_verify, name='kiosk_id_verify'),
     path('kiosk/services/', views.services, name='kiosk_services'),
+    path('authSys/', include('auth_system.urls')),
 ]
 
 if settings.DEBUG:

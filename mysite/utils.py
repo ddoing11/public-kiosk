@@ -215,3 +215,9 @@ def is_simple_agreement(text):
     
     # 정확히 일치하거나 매우 짧은 동의 표현
     return clean_text in agreement_keywords or (len(clean_text) <= 2 and any(keyword in clean_text for keyword in ['네', '예', '응', '어']))
+
+def is_identity_confirmation(text):
+    """'본인 확인' 또는 유사한 확인 표현 감지"""
+    confirmation_keywords = ['본인 확인', '본인확인', '확인']
+    clean_text = text.lower().strip().replace(" ", "")
+    return any(keyword in clean_text for keyword in confirmation_keywords)

@@ -5,8 +5,9 @@ from channels.generic.websocket import AsyncWebsocketConsumer
 from django.conf import settings
 from .state_manager import StateManager
 from .utils import (
-    get_gpt_streaming_response, azure_text_to_speech, # azure_text_to_speech는 상담 응답용으로 남겨둡니다.
-    is_consultation_request, is_consultation_end_request, is_simple_agreement
+    get_gpt_streaming_response, azure_text_to_speech,
+    is_consultation_request, is_consultation_end_request, is_simple_agreement,
+    is_identity_confirmation
 )
 
 logger = logging.getLogger('kiosk')
@@ -75,35 +76,38 @@ class KioskWebSocketConsumer(AsyncWebsocketConsumer):
         # 이미 자동으로 시작되므로 추가 처리 없음
         logger.info("Touch start received (automatic guidance already running)")
 
-    async def start_user_confirmation(self, patient): # patient를 인자로 받음
-        """TTS로 사용자 확인 질문을 시작하는 함수"""
+    async def start_user_confirmation(self, patient):
+        """TTS로 사용자 확인 질문을 시작하는 함수 (상태 전송 추가)"""
         if patient:
-            # 세션 대신 consumer의 상태 변수에 환자 정보 저장
             self.client_state['patient_to_confirm'] = patient
             self.client_state['step'] = 'confirming_user'
             
-            confirmation_text = f"{patient.get('patient_name')} 님 맞으신가요?"
+            confirmation_text = f"{patient.get('patient_name')} 님이 맞으시면, '본인 확인'이라고 말씀해주세요."
+            
+            # [수정] TTS 메시지와 함께 클라이언트의 상태를 'confirming_user'로 변경하라는 메시지를 보냅니다.
             await self.send_message('tts.text', {'text': confirmation_text})
+            await self.send_message('state.update', {'step': 'confirming_user'})
+            
             logger.info(f"사용자 확인 시작: {confirmation_text}")
         else:
             await self.send_error("확인할 환자 정보가 없습니다. 다시 시도해주세요.")
 
     async def handle_stt_result(self, text):
-        """STT 결과 처리 (상태에 따라 분기하도록 수정)"""
+        """STT 결과 처리 (상태 전송 추가)"""
         text = text.strip().lower()
         current_step = self.client_state.get('step', 'idle')
         logger.info(f"STT Result: '{text}', State: '{current_step}'")
 
-        # 1. 사용자 확인 단계 ("네/아니요" 답변 처리)
         if current_step == 'confirming_user':
-            if is_simple_agreement(text):
+            if is_identity_confirmation(text):
                 patient = self.client_state.get('patient_to_confirm')
                 await self.send_message('user.confirmed', {'patient': patient})
-                self.client_state.pop('patient_to_confirm', None)
-                self.client_state['step'] = 'listening'
             else:
                 await self.send_message('user.confirmation_failed')
-                self.client_state['step'] = 'listening'
+            
+            # [수정] 확인 절차가 끝났으니 클라이언트 상태를 다시 'listening'으로 되돌리라고 알려줍니다.
+            self.client_state['step'] = 'listening'
+            await self.send_message('state.update', {'step': 'listening'})
             return
 
         # 2. 듣기 단계 (상담 요청 또는 이름 입력 처리)
@@ -125,6 +129,7 @@ class KioskWebSocketConsumer(AsyncWebsocketConsumer):
             return
 
         logger.warning(f"STT result received in unhandled state: {current_step}")
+
     async def handle_simple_agreement(self):
         """단순 동의 표현 처리 ("네", "예" 등) - 무시"""
         logger.info("단순 동의 표현 감지 - 무시하고 대기 상태 유지")

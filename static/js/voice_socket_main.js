@@ -3,7 +3,7 @@
 // ===== 전역 변수 =====
 let websocket = null;
 let currentRecognition = null;
-let isWaitingForConfirmation = false;
+let clientState = 'listening';
 
 // ===== Azure Speech SDK 설정 =====
 let azureTokenInfo = null;
@@ -119,17 +119,32 @@ function handleWebSocketMessage(data) {
     console.log('📥 WebSocket 메시지:', data);
 
     switch (data.type) {
+        // [수정] tts.text는 단순히 TTS 재생만 담당하도록 정리
         case 'tts.text':
             speakOnClient(data.text);
-            // TTS 내용에 확인 질문이 포함되어 있는지 확인
-            if (data.text.includes('님 맞으신가요?')) {
-                isWaitingForConfirmation = true;
-                updateStatus('음성으로 답변해주세요. (예: "네")');
+            break;
+        
+        // [새로운 case 추가] 서버로부터 받은 상태를 저장
+        case 'state.update':
+            console.log('Client state updated to:', data.step);
+            clientState = data.step;
+            if (clientState === 'confirming_user') {
+                updateStatus('음성으로 답변해주세요. (예: "본인 확인")');
             }
             break;
-        case 'audio.ding':
-            // '띵' 소리는 제거되었으므로 이 부분은 비워둡니다.
+        
+        // ===== [새로운 case 추가] 음성 인식 결과를 이름 입력창에 자동 입력 =====
+        case 'stt.forward_to_input':
+            const nameSearchSection = document.getElementById('nameSearchSection');
+            // 이름 입력 단계가 활성화되어 있을 때만 실행
+            if (window.getComputedStyle(nameSearchSection).display !== 'none') {
+                const nameInput = document.getElementById('nameInput');
+                nameInput.value = data.text;
+                updateStatus(`음성으로 이름 "${data.text}" 입력됨`);
+                document.getElementById('nameSearchBtn').click(); // 자동으로 '최종 검색' 버튼 클릭
+            }
             break;
+            
         case 'mic.on':
             activateMicrophone();
             break;
@@ -152,7 +167,6 @@ function handleWebSocketMessage(data) {
             updateStatus('📡 ' + data.state);
             break;
         case 'user.confirmed':
-            isWaitingForConfirmation = false; // [추가] 확인 완료 후 상태 초기화
             updateStatus(`✅ ${data.patient.patient_name}님 확인. 서비스 페이지로 이동합니다.`);
             setTimeout(() => {
                 window.location.href = '/kiosk/services/';
@@ -160,9 +174,8 @@ function handleWebSocketMessage(data) {
             break;
         
         case 'user.confirmation_failed':
-            isWaitingForConfirmation = false; // [추가] 확인 실패 후 상태 초기화
             updateStatus('인증에 실패했습니다. 이름을 다시 말씀해주세요.');
-            document.getElementById('nameInput').focus(); // 이름 입력창에 다시 포커스
+            document.getElementById('nameInput').focus();
             break;
 
         default:
@@ -200,28 +213,18 @@ function startSpeechRecognition() {
     currentRecognition = new SpeechRecognition();
     currentRecognition.lang = 'ko-KR';
     currentRecognition.continuous = false; // 한 문장씩 인식
-currentRecognition.onresult = function(event) {
+    currentRecognition.onresult = function(event) {
         const result = event.results[0][0].transcript.trim();
         console.log('🎤 인식된 텍스트:', result);
 
-        // [수정된 부분 시작]
-        if (isWaitingForConfirmation) {
-            // "네/아니요" 대답을 처리해야 할 때
+        // [수정] isWaitingForConfirmation 대신 clientState를 확인
+        if (clientState === 'confirming_user') {
+            // "본인 확인" 답변을 처리해야 할 때 -> 서버로 전송
             websocket.send(JSON.stringify({ type: 'stt.result', text: result }));
         } 
         else {
-            // 이름을 입력받아야 할 때
-            const nameSearchSection = document.getElementById('nameSearchSection');
-            const nameInput = document.getElementById('nameInput');
-            const nameSearchBtn = document.getElementById('nameSearchBtn');
-
-            if (window.getComputedStyle(nameSearchSection).display !== 'none' && result.length > 1) {
-                updateStatus(`"이름: ${result}" 음성 인식됨. 검색을 시작합니다.`);
-                nameInput.value = result;
-                nameSearchBtn.click();
-            } 
-            // 기존 상담 기능
-            else if (result.length > 1 && websocket && websocket.readyState === WebSocket.OPEN) {
+            // 이름을 입력받아야 할 때 (서버가 stt.forward_to_input으로 처리)
+            if (result && websocket && websocket.readyState === WebSocket.OPEN) {
                 websocket.send(JSON.stringify({ type: 'stt.result', text: result }));
             }
         }
@@ -235,7 +238,7 @@ currentRecognition.onresult = function(event) {
 
     currentRecognition.onend = function() {
         const micIndicator = document.getElementById('mic-indicator');
-        // 마이크가 여전히 활성 상태여야 할 때만 재시작
+        // 마이크가 여전히 활성 상태여야 할 때만 재시작`
         if (micIndicator.classList.contains('active')) {
             setTimeout(() => {
                 if (micIndicator.classList.contains('active')) startSpeechRecognition();
@@ -406,6 +409,9 @@ document.addEventListener('DOMContentLoaded', function() {
                     successMessage.textContent = data.message;
                     nameSearchSection.style.display = 'block';
                     nameInput.focus();
+
+                    // ===== TTS로 이름 입력 안내 =====
+                    speakOnClient('이름을 말씀해주세요.'); 
                 } else {
                     updateStatus('❌ 1차 인증 실패: ' + data.message);
                 }

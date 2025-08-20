@@ -6,6 +6,7 @@ from django.http import JsonResponse
 from django.views.decorators.csrf import csrf_exempt
 import os, requests
 from django.conf import settings
+from auth_system.models import PatientList # auth_system의 모델을 가져옵니다.
 
 # 로거 설정
 logger = logging.getLogger('kiosk')
@@ -78,3 +79,60 @@ def speech_token(request):
     except Exception as e:
         return JsonResponse({"error": f"Token issue failed: {e}"}, status=500)
     
+
+def main(request):
+    """메인화면 + 주민번호 1차 검색 처리"""
+    if request.method == 'POST':
+        birth_number = request.POST.get('birth_number', '')
+        if len(birth_number) == 6 and birth_number.isdigit():
+            # auth_system/views.py의 get_patients_by_birth_number 로직을 가져옴
+            patients = PatientList.objects.filter(patient_id__startswith=birth_number)
+            
+            # 검색 결과를 세션에 저장하기 위해 직렬화
+            filtered_results = [
+                {
+                    'patient_name': p.patient_name, 'patient_id': p.patient_id,
+                    'gender': p.gender, 'birth_date': str(p.birth_date),
+                    'contact': p.contact
+                } for p in patients
+            ]
+            request.session['filtered_patients'] = filtered_results
+
+            return JsonResponse({
+                'success': True,
+                'message': f'{len(filtered_results)}명의 환자가 검색되었습니다.',
+            })
+        else:
+            return JsonResponse({'success': False, 'message': '올바른 6자리 숫자를 입력해주세요.'})
+            
+    return render(request, 'kiosk/main.html')
+
+@csrf_exempt
+def search_by_name_view(request):
+    """이름으로 2차 검색 처리"""
+    if request.method == 'POST':
+        data = json.loads(request.body)
+        name = data.get('name', '').strip()
+        
+        filtered_patients = request.session.get('filtered_patients', [])
+        
+        if not name:
+            return JsonResponse({'success': False, 'message': '이름을 입력해주세요.'})
+        
+        # 이름으로 2차 필터링
+        final_results = [p for p in filtered_patients if name in p['patient_name']]
+        
+        final_results = [p for p in filtered_patients if name in p['patient_name']]
+        
+        # [수정된 부분 시작]
+        if len(final_results) == 1:
+            # 결과가 한 명이면, 환자 정보를 응답에 직접 담아서 보냄
+            return JsonResponse({
+                'success': True, 
+                'confirmation_needed': True,
+                'patient': final_results[0]  
+            })
+        
+        return JsonResponse({'success': True, 'results': final_results})
+    return JsonResponse({'success': False, 'message': '잘못된 요청입니다.'})
+

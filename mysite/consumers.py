@@ -32,18 +32,18 @@ class KioskWebSocketConsumer(AsyncWebsocketConsumer):
         logger.info(f"WebSocket client disconnected: {close_code}")
 
     async def start_automatic_guidance(self):
-        """페이지 접속 시 자동으로 안내 멘트 시작 (클라이언트 TTS 방식으로 수정)"""
+        """페이지 접속 시 자동으로 안내 멘트 시작 (상태 관리 강화)"""
         try:
             self.client_state['step'] = 'prompting'
-            
-            # 마이크 먼저 끄기
             await self.send_message('mic.off')
             
-            # 클라이언트에 TTS 요청 메시지 전송
             guidance_text = "주민번호 앞 여섯자리를 입력하여 서류 출력 서비스로 이동하시거나 상담이 필요하시면 상담이라고 말씀해주세요."
             await self.send_message('tts.text', {'text': guidance_text})
-        
-            logger.info("Automatic guidance message sent to client for TTS")
+            
+            # [중요] 음성 안내 후 상태를 'listening'으로 명확히 변경
+            self.client_state['step'] = 'listening'
+            await self.send_message('status', {'state': 'listening'})
+            logger.info("Automatic guidance sent. State -> listening")
             
         except Exception as e:
             logger.error(f"Automatic guidance error: {str(e)}")
@@ -54,8 +54,9 @@ class KioskWebSocketConsumer(AsyncWebsocketConsumer):
             data = json.loads(text_data)
             message_type = data.get('type')
             
-            if message_type == 'ui.touch_start':
-                await self.handle_touch_start()
+            # user.confirmation_start 로직을 patient 데이터와 함께 받도록 수정
+            if message_type == 'user.confirmation_start':
+                await self.start_user_confirmation(data.get('patient'))
             elif message_type == 'stt.result':
                 await self.handle_stt_result(data.get('text', ''))
             elif message_type == 'stt.partial':
@@ -74,60 +75,56 @@ class KioskWebSocketConsumer(AsyncWebsocketConsumer):
         # 이미 자동으로 시작되므로 추가 처리 없음
         logger.info("Touch start received (automatic guidance already running)")
 
+    async def start_user_confirmation(self, patient): # patient를 인자로 받음
+        """TTS로 사용자 확인 질문을 시작하는 함수"""
+        if patient:
+            # 세션 대신 consumer의 상태 변수에 환자 정보 저장
+            self.client_state['patient_to_confirm'] = patient
+            self.client_state['step'] = 'confirming_user'
+            
+            confirmation_text = f"{patient.get('patient_name')} 님 맞으신가요?"
+            await self.send_message('tts.text', {'text': confirmation_text})
+            logger.info(f"사용자 확인 시작: {confirmation_text}")
+        else:
+            await self.send_error("확인할 환자 정보가 없습니다. 다시 시도해주세요.")
+
     async def handle_stt_result(self, text):
-        """🔥 수정된 STT 결과 처리"""
+        """STT 결과 처리 (상태에 따라 분기하도록 수정)"""
         text = text.strip().lower()
-        current_step = self.client_state['step']
-        
-        logger.info(f"STT 결과 처리: '{text}', 현재 단계: {current_step}")
-        
-        # 빈 텍스트나 너무 짧은 텍스트는 무시
-        if len(text.strip()) < 2:
-            logger.info(f"너무 짧은 텍스트 무시: '{text}'")
+        current_step = self.client_state.get('step', 'idle')
+        logger.info(f"STT Result: '{text}', State: '{current_step}'")
+
+        # 1. 사용자 확인 단계 ("네/아니요" 답변 처리)
+        if current_step == 'confirming_user':
+            if is_simple_agreement(text):
+                patient = self.client_state.get('patient_to_confirm')
+                await self.send_message('user.confirmed', {'patient': patient})
+                self.client_state.pop('patient_to_confirm', None)
+                self.client_state['step'] = 'listening'
+            else:
+                await self.send_message('user.confirmation_failed')
+                self.client_state['step'] = 'listening'
+            return
+
+        # 2. 듣기 단계 (상담 요청 또는 이름 입력 처리)
+        if current_step == 'listening':
+            # 상담 요청 단어가 포함된 경우
+            if is_consultation_request(text):
+                await self.start_consultation(text)
+            # 그 외의 모든 음성은 이름 입력으로 간주하고 클라이언트로 전달
+            elif len(text) > 0:
+                await self.send_message('stt.forward_to_input', {'text': text})
             return
         
-        # TTS 관련 텍스트 필터링 (자기 음성 인식 방지)
-        # 더 정확한 TTS 텍스트 필터링
-        tts_phrases = ['무엇을 도와드릴', '목적에 따라 필요한', '원하시는 목적을', '안내해 드리겠습니다']
-        if any(phrase in text for phrase in tts_phrases):
-            logger.info(f"TTS 음성 인식 감지 - 무시: '{text}'")
-            return
-        
-        # 상담 중인 경우
+        # 3. 상담 진행 중인 경우
         if current_step == 'advising':
-            # 상담 종료 요청 확인
             if is_consultation_end_request(text):
                 await self.end_consultation_with_guidance()
-                return
             else:
-                # 계속 상담 진행
                 await self.continue_consultation(text)
-                return
-        
-        # listening 상태가 아니면 무시
-        if current_step != 'listening':
-            logger.info(f"listening 상태가 아님 - 무시: {current_step}")
             return
-        
-        # 1. 단순 동의 표현인지 먼저 확인 ("네", "예" 등)
-        if is_simple_agreement(text):
-            await self.handle_simple_agreement()
-            return
-            
-        # 2. 상담 요청인지 확인
-        if is_consultation_request(text):
-            await self.start_consultation(text)
-            return
-        
-        # 3. 의미있는 발화가 있는 경우 → 상담으로 처리 (길이 3자 이상)
-        if len(text.strip()) >= 3:
-            logger.info(f"의미있는 발화를 상담으로 처리: '{text}'")
-            await self.start_consultation(text)
-            return
-        
-        # 4. 그 외 무시
-        logger.info(f"의미없는 발화 무시: '{text}'")
 
+        logger.warning(f"STT result received in unhandled state: {current_step}")
     async def handle_simple_agreement(self):
         """단순 동의 표현 처리 ("네", "예" 등) - 무시"""
         logger.info("단순 동의 표현 감지 - 무시하고 대기 상태 유지")
@@ -268,3 +265,6 @@ class KioskWebSocketConsumer(AsyncWebsocketConsumer):
         await azure_text_to_speech(error_message, self)
         self.client_state['step'] = 'listening'
         self.client_state['retry_count'] = 0
+
+
+    

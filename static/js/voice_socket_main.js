@@ -3,6 +3,7 @@
 // ===== 전역 변수 =====
 let websocket = null;
 let currentRecognition = null;
+let isWaitingForConfirmation = false;
 
 // ===== Azure Speech SDK 설정 =====
 let azureTokenInfo = null;
@@ -120,6 +121,11 @@ function handleWebSocketMessage(data) {
     switch (data.type) {
         case 'tts.text':
             speakOnClient(data.text);
+            // TTS 내용에 확인 질문이 포함되어 있는지 확인
+            if (data.text.includes('님 맞으신가요?')) {
+                isWaitingForConfirmation = true;
+                updateStatus('음성으로 답변해주세요. (예: "네")');
+            }
             break;
         case 'audio.ding':
             // '띵' 소리는 제거되었으므로 이 부분은 비워둡니다.
@@ -145,6 +151,20 @@ function handleWebSocketMessage(data) {
             // 'listening' 상태일 때 UI 텍스트를 직접 바꾸는 대신, 상태 바만 업데이트합니다.
             updateStatus('📡 ' + data.state);
             break;
+        case 'user.confirmed':
+            isWaitingForConfirmation = false; // [추가] 확인 완료 후 상태 초기화
+            updateStatus(`✅ ${data.patient.patient_name}님 확인. 서비스 페이지로 이동합니다.`);
+            setTimeout(() => {
+                window.location.href = '/kiosk/services/';
+            }, 1500);
+            break;
+        
+        case 'user.confirmation_failed':
+            isWaitingForConfirmation = false; // [추가] 확인 실패 후 상태 초기화
+            updateStatus('인증에 실패했습니다. 이름을 다시 말씀해주세요.');
+            document.getElementById('nameInput').focus(); // 이름 입력창에 다시 포커스
+            break;
+
         default:
             console.warn('알 수 없는 메시지 타입:', data.type);
     }
@@ -180,12 +200,30 @@ function startSpeechRecognition() {
     currentRecognition = new SpeechRecognition();
     currentRecognition.lang = 'ko-KR';
     currentRecognition.continuous = false; // 한 문장씩 인식
-
-    currentRecognition.onresult = function(event) {
+currentRecognition.onresult = function(event) {
         const result = event.results[0][0].transcript.trim();
         console.log('🎤 인식된 텍스트:', result);
-        if (result.length > 1 && websocket && websocket.readyState === WebSocket.OPEN) {
+
+        // [수정된 부분 시작]
+        if (isWaitingForConfirmation) {
+            // "네/아니요" 대답을 처리해야 할 때
             websocket.send(JSON.stringify({ type: 'stt.result', text: result }));
+        } 
+        else {
+            // 이름을 입력받아야 할 때
+            const nameSearchSection = document.getElementById('nameSearchSection');
+            const nameInput = document.getElementById('nameInput');
+            const nameSearchBtn = document.getElementById('nameSearchBtn');
+
+            if (window.getComputedStyle(nameSearchSection).display !== 'none' && result.length > 1) {
+                updateStatus(`"이름: ${result}" 음성 인식됨. 검색을 시작합니다.`);
+                nameInput.value = result;
+                nameSearchBtn.click();
+            } 
+            // 기존 상담 기능
+            else if (result.length > 1 && websocket && websocket.readyState === WebSocket.OPEN) {
+                websocket.send(JSON.stringify({ type: 'stt.result', text: result }));
+            }
         }
     };
 
@@ -271,9 +309,179 @@ function setupEventListeners() {
 }
 
 // ===== 페이지 로드 시 실행 =====
+// static/js/voice_socket_main.js
+
+// ... (파일 상단의 다른 모든 함수는 그대로 둡니다) ...
+
+// ===== 페이지 로드 시 실행 (이 부분을 통째로 교체하세요) =====
 document.addEventListener('DOMContentLoaded', function() {
-    updateStatus('시스템 초기화 중...');
-    updateConsultationStatus('WebSocket 연결 중...');
-    initializeWebSocket();
-    setupEventListeners();
+    const audioUnlockOverlay = document.getElementById('audio-unlock-overlay');
+
+    // --- 초기화 함수 ---
+    function initializeKiosk() {
+        // [중요] 오버레이를 숨겨서 다른 버튼과 입력을 가능하게 함
+        audioUnlockOverlay.style.display = 'none';
+
+        // WebSocket 연결 및 음성 안내 시작
+        updateStatus('시스템 초기화 중...');
+        updateConsultationStatus('WebSocket 연결 중...');
+        initializeWebSocket(); 
+        
+        // 인증 관련 이벤트 리스너 설정
+        setupAuthEventListeners(); 
+
+        // 첫 번째 주민번호 입력 칸에 자동으로 포커스
+        const digitInputs = document.querySelectorAll('.birth-digit');
+        if(digitInputs.length > 0) {
+            digitInputs[0].focus();
+        }
+    }
+
+    // --- idle 페이지를 거쳐왔는지 확인 ---
+    // document.referrer는 현재 페이지로 이동하기 직전 페이지의 URL을 담고 있습니다.
+    if (document.referrer && document.referrer.includes('/kiosk/idle/')) {
+        // idle 페이지에서 왔으면 바로 키오스크 기능 시작
+        initializeKiosk();
+    } else {
+        // 새로고침 또는 직접 접속 시에는 터치 대기 화면 표시
+        audioUnlockOverlay.style.cssText = "position:fixed; top:0; left:0; width:100%; height:100%; z-index:1000; background-color: rgba(0,0,0,0.5); color:white; display:flex; justify-content:center; align-items:center; font-size: 2rem; cursor: pointer;";
+        audioUnlockOverlay.innerHTML = "<h1>화면을 터치하여 시작하세요</h1>";
+        
+        // 터치를 기다렸다가 키오스크 기능 시작
+        audioUnlockOverlay.addEventListener('click', initializeKiosk, { once: true });
+    }
+
+    // --- 인증 관련 이벤트 리스너 설정 함수 ---
+    function setupAuthEventListeners() {
+        const birthForm = document.getElementById('birthForm');
+        const digitInputs = document.querySelectorAll('.birth-digit');
+        const birthSubmitBtn = document.getElementById('birthSubmitBtn');
+        const nameSearchSection = document.getElementById('nameSearchSection');
+        const nameInput = document.getElementById('nameInput');
+        const nameSearchBtn = document.getElementById('nameSearchBtn');
+        const resultsSection = document.getElementById('resultsSection');
+        const resultsList = document.getElementById('resultsList');
+        const successMessage = document.getElementById('birthSuccessMessage');
+
+        // (1단계) 주민번호 입력 필드 자동 이동 및 유효성 검사
+        digitInputs.forEach((input, index) => {
+            input.addEventListener('input', () => {
+                if (input.value.length === 1 && index < digitInputs.length - 1) {
+                    digitInputs[index + 1].focus();
+                }
+                checkBirthFormValidity();
+            });
+            input.addEventListener('keydown', (e) => {
+                if (e.key === 'Backspace' && input.value === '' && index > 0) {
+                    digitInputs[index - 1].focus();
+                }
+            });
+        });
+
+        function checkBirthFormValidity() {
+            const allFilled = Array.from(digitInputs).every(input => input.value.match(/^[0-9]$/));
+            birthSubmitBtn.disabled = !allFilled;
+        }
+
+        // (2단계) 주민번호 폼 제출
+        birthForm.addEventListener('submit', function(e) {
+            e.preventDefault();
+            const birthNumber = Array.from(digitInputs).map(input => input.value).join('');
+            const csrfToken = document.querySelector('[name=csrfmiddlewaretoken]').value;
+
+            updateStatus('주민번호 확인 중...');
+            
+            const formData = new FormData();
+            formData.append('birth_number', birthNumber);
+            formData.append('csrfmiddlewaretoken', csrfToken);
+
+            fetch('/kiosk/main/', {
+                method: 'POST',
+                body: new URLSearchParams(formData)
+            })
+            .then(res => res.json())
+            .then(data => {
+                if (data.success) {
+                    updateStatus('✅ 1차 인증 완료. 이름을 입력해주세요.');
+                    successMessage.textContent = data.message;
+                    nameSearchSection.style.display = 'block';
+                    nameInput.focus();
+                } else {
+                    updateStatus('❌ 1차 인증 실패: ' + data.message);
+                }
+            });
+        });
+
+        // (3단계) 이름 검색 버튼 클릭
+        nameSearchBtn.addEventListener('click', function() {
+            const name = nameInput.value.trim();
+            if (!name) {
+                updateStatus('⚠️ 이름을 입력해주세요.');
+                return;
+            }
+            updateStatus('이름으로 검색 중...');
+            fetch('/kiosk/search_by_name/', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({ name: name })
+            })
+            .then(res => res.json())
+            .then(data => {
+                if (data.success) {
+                    // [수정된 부분 시작]
+                    if (data.confirmation_needed) {
+                        // 결과가 한 명이라 확인이 필요한 경우
+                        updateStatus('음성으로 본인 확인을 진행합니다.');
+                        // [수정] WebSocket으로 환자 정보를 직접 전달
+                        websocket.send(JSON.stringify({ 
+                            type: 'user.confirmation_start',
+                            patient: data.patient // <-- 서버에서 받은 환자 정보를 추가
+                        }));
+                    } else {
+                        // 결과가 여러 명이거나 없는 경우
+                        updateStatus(`✅ ${data.results.length}명의 환자를 찾았습니다.`);
+                        displayResults(data.results);
+                    }
+                } else {
+                    updateStatus('❌ 이름 검색 실패: ' + data.message);
+                    resultsList.innerHTML = `<p>${data.message}</p>`;
+                }
+            });
+        });
+        
+        nameInput.addEventListener('keypress', e => {
+            if (e.key === 'Enter') nameSearchBtn.click();
+        });
+    }
+
+    // --- 결과 표시 및 다음 단계 이동 함수 ---
+    function displayResults(results) {
+        const resultsList = document.getElementById('resultsList');
+        const resultsSection = document.getElementById('resultsSection');
+        resultsList.innerHTML = '';
+        if (results.length === 0) {
+            resultsList.innerHTML = '<p>일치하는 환자가 없습니다.</p>';
+        } else {
+            results.forEach(result => {
+                const item = document.createElement('div');
+                item.className = 'result-item';
+                item.innerHTML = `
+                    <div><strong>${result.patient_name}</strong> (${result.gender}, ${result.birth_date})</div>
+                    <div>환자번호: ${result.patient_id}</div>
+                    <button class="verify-button select-patient-btn">이 환자 선택</button>
+                `;
+                item.querySelector('.select-patient-btn').addEventListener('click', () => {
+                    selectPatient(result);
+                });
+                resultsList.appendChild(item);
+            });
+        }
+        resultsSection.style.display = 'block';
+    }
+
+    function selectPatient(patientData) {
+        updateStatus(`${patientData.patient_name}님 선택. 서비스 페이지로 이동합니다.`);
+        alert(`${patientData.patient_name}님을 선택했습니다. 이제 이 환자의 서류만 조회됩니다.`);
+        window.location.href = '/kiosk/services/';
+    }
 });

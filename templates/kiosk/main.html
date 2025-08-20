@@ -8,6 +8,15 @@
     <script defer src="https://aka.ms/csspeech/jsbrowserpackageraw"></script>
     
     <style>
+        .birth-input { display: flex; gap: 5px; justify-content: center; margin-bottom: 15px; }
+        .birth-digit { width: 40px; height: 50px; text-align: center; font-size: 24px; border: 2px solid #ddd; border-radius: 8px; }
+        .name-input { width: calc(100% - 30px); padding: 15px; font-size: 18px; border: 2px solid #ddd; border-radius: 8px; margin: 10px 0; }
+        .verify-button { padding: 15px 30px; font-size: 18px; background-color: #28a745; color: white; border: none; border-radius: 8px; cursor: pointer; }
+        .verify-button:disabled { background-color: #ccc; cursor: not-allowed; }
+        .results-section { background: #f8f9fa; padding: 20px; border-radius: 10px; }
+        .result-item { background: white; border: 1px solid #ddd; border-radius: 8px; padding: 15px; margin-bottom: 10px; }
+        .result-item button { margin-top: 10px; background-color: #007bff; }
+
         body {
             font-family: Arial, sans-serif;
             margin: 0;
@@ -169,6 +178,7 @@
     </style>
 </head>
 <body>
+    <div id="audio-unlock-overlay"></div>
     <button class="back-button" onclick="window.location.href='/kiosk/idle/'">← 처음으로</button>
     
     <div class="container">
@@ -178,47 +188,56 @@
         </div>
         
         <div class="options-container">
-            <!-- 주민번호 입력 옵션 -->
             <div class="option-card id-input-section">
                 <h3>📝 주민번호로 신원확인</h3>
-                <p>주민번호 앞 6자리를 입력해주세요</p>
-                <input type="text" 
-                       id="resident-id" 
-                       maxlength="6" 
-                       placeholder="YYYYMM"
-                       pattern="[0-9]{6}">
-                <br>
-                <button id="verify-button">확인</button>
+                
+                <form id="birthForm" method="POST" action="/kiosk/main/">
+                    {% csrf_token %}
+                    <p>주민번호 앞 6자리를 입력해주세요</p>
+                    <div class="birth-input">
+                        <input type="text" name="birth_digit_1" class="birth-digit" maxlength="1" pattern="[0-9]" data-index="0">
+                        <input type="text" name="birth_digit_2" class="birth-digit" maxlength="1" pattern="[0-9]" data-index="1">
+                        <input type="text" name="birth_digit_3" class="birth-digit" maxlength="1" pattern="[0-9]" data-index="2">
+                        <input type="text" name="birth_digit_4" class="birth-digit" maxlength="1" pattern="[0-9]" data-index="3">
+                        <input type="text" name="birth_digit_5" class="birth-digit" maxlength="1" pattern="[0-9]" data-index="4">
+                        <input type="text" name="birth_digit_6" class="birth-digit" maxlength="1" pattern="[0-9]" data-index="5">
+                    </div>
+                    <button type="submit" id="birthSubmitBtn" class="verify-button" disabled>1차 검색</button>
+                </form>
+
+                <div class="name-search-section" id="nameSearchSection" style="display: none;">
+                    <p id="birthSuccessMessage" style="color: green; font-weight: bold;"></p>
+                    <label for="nameInput">이름을 입력해주세요 (음성으로도 가능)</label>
+                    <input type="text" id="nameInput" class="name-input" placeholder="환자 이름을 입력하세요">
+                    <button type="button" id="nameSearchBtn" class="verify-button">최종 검색</button>
+                </div>
             </div>
             
-            <!-- 음성 상담 상태 표시 -->
             <div class="option-card consultation-section">
                 <h3>🎤 음성 상담 서비스</h3>
                 <p id="consultation-status">시스템 준비 중...</p>
-                
                 <div class="mic-indicator" id="mic-indicator">🎤</div>
-                
                 <p style="font-size: 16px; color: #28a745; margin-top: 10px;" id="instruction-text">
                     음성 안내를 들으신 후 말씀해주세요
                 </p>
             </div>
         </div>
-        
-        <!-- GPT 응답 표시 영역 -->
+
         <div class="gpt-response" id="gpt-response">
             <h4>💬 상담원 응답:</h4>
             <div id="gpt-content"></div>
         </div>
         
-        <!-- 상태 표시바 -->
+        <div class="results-section" id="resultsSection" style="display:none; margin-top: 20px;">
+            <h3>🏥 검색 결과</h3>
+            <div id="resultsList"></div>
+        </div>
+        
         <div class="status-bar" id="status-bar">
             시스템 준비 완료 - 서비스를 선택해주세요
         </div>
     </div>
 
-    <!-- WebSocket 클라이언트 로드 -->
     <script src="/static/js/voice_socket_main.js"></script>
-    
-    
 </body>
 </html>

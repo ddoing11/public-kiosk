@@ -8,8 +8,6 @@ from channels.db import database_sync_to_async
 from datetime import date, datetime
 from .models import Medical_Certificate, Prescription, MedicalReceipt
 
-
-
 logger = logging.getLogger('kiosk')
 client = OpenAI(api_key=getattr(settings, 'OPENAI_API_KEY', ''))
 
@@ -19,6 +17,7 @@ class ServiceWebSocketConsumer(AsyncWebsocketConsumer):
     
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
+        self.selected_patient = None  # 선택된 환자 정보를 저장할 변수
         self.doc_type_model_map = {
             "진료확인서": Medical_Certificate,
             "처방전": Prescription,
@@ -62,13 +61,20 @@ class ServiceWebSocketConsumer(AsyncWebsocketConsumer):
             return v.strftime("%Y-%m-%d")
         return v
 
-
-
     async def connect(self):
         await self.accept()
         logger.info("Service WebSocket connected")
         
-        # 연결 즉시 자동으로 음성 안내 시작
+        # [핵심] 세션에서 선택된 환자 정보를 가져옵니다.
+        self.selected_patient = self.scope['session'].get('selected_patient', None)
+        
+        if self.selected_patient:
+            logger.info(f"Authenticated user: {self.selected_patient.get('patient_name')}")
+            # 클라이언트에 환자 정보를 보내 UI에 표시하도록 합니다.
+            await self.send_message('patient.info', {'patient': self.selected_patient})
+        else:
+            logger.warning("No authenticated user found in session.")
+
         await asyncio.sleep(1)
         await self.start_voice_guidance()
     
@@ -100,39 +106,21 @@ class ServiceWebSocketConsumer(AsyncWebsocketConsumer):
     
     async def start_voice_guidance(self):
         """음성 안내 시작"""
-        try:
-            # utils가 mic.off -> TTS -> audio.ding -> mic.on 순서로 전부 처리함
-            guidance_text = "원하시는 서류를 말씀해주세요. 진료확인서, 처방전, 진료영수증 중에서 선택하실 수 있습니다."
-            await self.send_message('tts.text', {'text': guidance_text})
-            logger.info("Service guidance queued (client TTS)")
-        except Exception as e:
-            logger.error(f"Voice guidance error: {str(e)}")
+        guidance_text = "원하시는 서류를 말씀해주세요. 진료확인서, 처방전, 진료영수증 중에서 선택하실 수 있습니다."
+        await self.send_message('tts.text', {'text': guidance_text})
+        logger.info("Service guidance queued (client TTS)")
             
     async def process_voice_input(self, text):
         """음성 입력을 GPT로 분석하여 서류 종류 판단"""
-        try:
-            # 마이크 끄기
-            await self.send_message('mic.off')
-            
-            # GPT를 이용한 문서 종류 판단
-            doc_type = await self.analyze_document_type(text)
-            
-            if doc_type == "알수없음":
-                await self.send_message('tts.text', {'text': '죄송합니다. 다시 한번 서류명을 말씀해주세요.'})
-                return
-            
-            # 문서 종류 인식 성공
-            await self.send_message('document.recognized', {
-                'document_type': doc_type,
-                'original_text': text
-            })
-            
-            # DB 조회 및 음성 안내
-            await self.query_database(doc_type)
-            
-        except Exception as e:
-            logger.error(f"Voice processing error: {str(e)}")
-            await self.send_error("음성 처리 중 오류가 발생했습니다.")
+        await self.send_message('mic.off')
+        doc_type = await self.analyze_document_type(text)
+        
+        if doc_type == "알수없음":
+            await self.send_message('tts.text', {'text': '죄송합니다. 다시 한번 서류명을 말씀해주세요.'})
+            return
+        
+        await self.send_message('document.recognized', {'document_type': doc_type})
+        await self.query_database(doc_type)
     
     async def analyze_document_type(self, text):
         """GPT를 사용하여 문서 종류 판단"""
@@ -144,11 +132,8 @@ class ServiceWebSocketConsumer(AsyncWebsocketConsumer):
 - 처방전
 - 진료영수증
 
-
 만약 목록에 해당하는 문서가 없거나, 발화 내용이 불분명하여 판단할 수 없는 경우에는, 
-다른 어떤 말도 하지 말고 "알수없음" 이라고만 응답해 주십시오.
-
-응답은 반드시 위 목록의 정확한 명칭 또는 "알수없음" 중 하나여야 합니다."""
+다른 어떤 말도 하지 말고 "알수없음" 이라고만 응답해 주십시오."""
 
             response = client.chat.completions.create(
                 model="gpt-4o-mini",
@@ -171,71 +156,54 @@ class ServiceWebSocketConsumer(AsyncWebsocketConsumer):
     
     async def process_service_selection(self, service_name):
         """서비스 직접 선택 처리 (카드 클릭)"""
-        try:
-            # 마이크 끄기
-            await self.send_message('mic.off')
-            
-            # DB 조회 및 음성 안내
-            await self.query_database(service_name)
-            
-        except Exception as e:
-            logger.error(f"Service selection error: {str(e)}")
-            await self.send_error("서비스 처리 중 오류가 발생했습니다.")
+        await self.send_message('mic.off')
+        await self.query_database(service_name)
     
-    # ServiceWebSocketConsumer 안의 query_database() 전체 교체
     async def query_database(self, doc_type):
-        """사용자가 말한 서류 타입의 전체 목록을 DB에서 조회"""
+        """세션의 환자 정보로 DB를 필터링하여 조회"""
         try:
             model_class = self.doc_type_model_map.get(doc_type)
             if not model_class:
-                await self.send_message('db.results', {
-                    'results': [],
-                    'message': f'{doc_type}은(는) 준비 중인 서비스입니다.'
-                })
-                await self.send_message('tts.text', {'text': f'{doc_type}은 준비 중인 서비스입니다.'})
+                await self.send_message('tts.text', {'text': f'{doc_type}은(는) 준비 중인 서비스입니다.'})
                 return
 
+            # [핵심] self.selected_patient 정보로 쿼리를 필터링합니다.
+            patient_filter = {}
+            if self.selected_patient:
+                patient_filter['patient_id'] = self.selected_patient.get('patient_id')
+            
             field_map = self.FIELD_MAP.get(doc_type, [])
-            results = await self.fetch_all_generic(model_class, field_map, limit=100)
+            results = await self.fetch_all_generic(model_class, field_map, filters=patient_filter)
 
             await self.send_message('db.results', {'results': results})
 
             if results:
-                await self.send_message('tts.text', {'text': f"{doc_type} 리스트입니다. 총 {len(results)}건의 결과를 찾았습니다."})
-                # “날짜를 선택해 주세요.” 추가로 한 줄 더
+                patient_name = self.selected_patient.get('patient_name', '고객') if self.selected_patient else '전체'
+                await self.send_message('tts.text', {'text': f"{patient_name}님의 {doc_type} 리스트입니다. 총 {len(results)}건의 결과를 찾았습니다."})
                 await self.send_message('tts.text', {'text': "날짜를 선택해 주세요."})
             else:
                 await self.send_message('tts.text', {'text': f"{doc_type} 조회 결과가 없습니다. 다른 서류를 선택해 주세요."})
         except Exception:
             logger.exception("Database query error")
             await self.send_error("데이터베이스 조회 중 오류가 발생했습니다.")
-        
-
-    async def send_message(self, msg_type, data=None):
-        """클라이언트로 메시지 전송"""
-        message = {'type': msg_type}
-        if data:
-            message.update(data)
-        await self.send(text_data=json.dumps(message))
-    
-    async def send_error(self, error_message):
-        """에러 메시지 전송"""
-        await self.send_message('error', {'message': error_message})
-        await self.send_message('tts.text', {'text': error_message})
-
 
     @database_sync_to_async
-    def fetch_all_generic(self, model_class, field_map, limit=100):
-        # 존재 가능성 있는 날짜 컬럼 우선 정렬, 없으면 id 역순
+    def fetch_all_generic(self, model_class, field_map, filters=None, limit=100):
+        qs = model_class.objects.all()
+        
+        # [핵심] 필터가 있으면 적용합니다.
+        if filters:
+            qs = qs.filter(**filters)
+            
+        # 정렬 로직
         order_fields = []
-        candidates = ["prescription_date", "receipt_date", "birth_date", "id"]
+        candidates = ["prescription_date", "receipt_date", "id"]
         model_fields = {f.attname for f in model_class._meta.get_fields() if hasattr(f, "attname")}
         for c in candidates:
             if c in model_fields:
-                order_fields.append(f"-{c}" if c != "id" else "-id")
+                order_fields.append(f"-{c}")
                 break
 
-        qs = model_class.objects.all()
         if order_fields:
             qs = qs.order_by(*order_fields)
 
@@ -250,3 +218,15 @@ class ServiceWebSocketConsumer(AsyncWebsocketConsumer):
                     item[out_key] = self._fmt(getattr(obj, attr, None))
             rows.append(item)
         return rows
+
+    async def send_message(self, msg_type, data=None):
+        """클라이언트로 메시지 전송"""
+        message = {'type': msg_type}
+        if data:
+            message.update(data)
+        await self.send(text_data=json.dumps(message))
+    
+    async def send_error(self, error_message):
+        """에러 메시지 전송"""
+        await self.send_message('error', {'message': error_message})
+        await self.send_message('tts.text', {'text': error_message})

@@ -107,6 +107,31 @@ def main(request):
             
     return render(request, 'kiosk/main.html')
 
+# ===== 선택된 환자 정보를 세션에 저장하는 함수 =====
+@csrf_exempt
+def select_patient_view(request):
+    """선택된 환자 정보를 세션에 저장하는 API"""
+    if request.method == 'POST':
+        try:
+            data = json.loads(request.body)
+            patient_data = data.get('patient_data')
+            
+            if not patient_data:
+                return JsonResponse({'success': False, 'error': '환자 정보가 없습니다.'}, status=400)
+            
+            # [핵심] Django 세션에 선택된 환자 정보 저장
+            request.session['selected_patient'] = patient_data
+            logger.info(f"환자 선택됨: {patient_data.get('patient_name')}, 세션에 저장.")
+            
+            return JsonResponse({'success': True})
+            
+        except json.JSONDecodeError:
+            return JsonResponse({'success': False, 'error': '잘못된 요청 형식입니다.'}, status=400)
+            
+    return JsonResponse({'success': False, 'error': 'POST 요청만 가능합니다.'}, status=405)
+
+
+
 @csrf_exempt
 def search_by_name_view(request):
     """이름으로 2차 검색 처리"""

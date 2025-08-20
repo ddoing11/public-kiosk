@@ -20,7 +20,8 @@ urlpatterns = [
     path('kiosk/main/', views.main, name='kiosk_main'),         # <-- 주민번호 1차 검색은 이 URL을 계속 사용합니다.
     path('kiosk/id-verify/', views.id_verify, name='kiosk_id_verify'), # 이 URL은 이제 사용되지 않지만, 다른 기능과의 호환성을 위해 남겨둡니다.
     path('kiosk/services/', views.services, name='kiosk_services'),
-
+    path('kiosk/select_patient/', views.select_patient_view, name='kiosk_select_patient'),
+    
     path('kiosk/search_by_name/', views.search_by_name_view, name='kiosk_search_by_name'),
 ]
 

@@ -38,7 +38,7 @@ class KioskWebSocketConsumer(AsyncWebsocketConsumer):
             self.client_state['step'] = 'prompting'
             await self.send_message('mic.off')
             
-            guidance_text = "주민번호 앞 여섯자리를 입력하여 서류 출력 서비스로 이동하시거나 상담이 필요하시면 상담이라고 말씀해주세요."
+            guidance_text = "주민번호 앞 여섯자리를 입력해주세요."
             await self.send_message('tts.text', {'text': guidance_text})
             
             # [중요] 음성 안내 후 상태를 'listening'으로 명확히 변경
@@ -93,7 +93,7 @@ class KioskWebSocketConsumer(AsyncWebsocketConsumer):
             await self.send_error("확인할 환자 정보가 없습니다. 다시 시도해주세요.")
 
     async def handle_stt_result(self, text):
-        """STT 결과 처리 (상태 전송 추가)"""
+        """STT 결과 처리 (인증 흐름에만 집중)"""
         text = text.strip().lower()
         current_step = self.client_state.get('step', 'idle')
         logger.info(f"STT Result: '{text}', State: '{current_step}'")
@@ -105,31 +105,16 @@ class KioskWebSocketConsumer(AsyncWebsocketConsumer):
             else:
                 await self.send_message('user.confirmation_failed')
             
-            # [수정] 확인 절차가 끝났으니 클라이언트 상태를 다시 'listening'으로 되돌리라고 알려줍니다.
             self.client_state['step'] = 'listening'
             await self.send_message('state.update', {'step': 'listening'})
             return
 
-        # 2. 듣기 단계 (상담 요청 또는 이름 입력 처리)
-        if current_step == 'listening':
-            # 상담 요청 단어가 포함된 경우
-            if is_consultation_request(text):
-                await self.start_consultation(text)
-            # 그 외의 모든 음성은 이름 입력으로 간주하고 클라이언트로 전달
-            elif len(text) > 0:
-                await self.send_message('stt.forward_to_input', {'text': text})
-            return
-        
-        # 3. 상담 진행 중인 경우
-        if current_step == 'advising':
-            if is_consultation_end_request(text):
-                await self.end_consultation_with_guidance()
-            else:
-                await self.continue_consultation(text)
-            return
-
-        logger.warning(f"STT result received in unhandled state: {current_step}")
-
+        if current_step == 'listening' and len(text) > 0:
+            # 이름 입력 단계일 때만 음성 입력을 클라이언트로 전달
+            await self.send_message('stt.forward_to_input', {'text': text})
+        else:
+            logger.warning(f"STT result received in unhandled state: {current_step}")
+            
     async def handle_simple_agreement(self):
         """단순 동의 표현 처리 ("네", "예" 등) - 무시"""
         logger.info("단순 동의 표현 감지 - 무시하고 대기 상태 유지")
@@ -246,7 +231,7 @@ class KioskWebSocketConsumer(AsyncWebsocketConsumer):
         
         if retry_count < self.client_state.get('max_retries', 1):  # 최대 1번만
             await self.send_message('mic.off')
-            retry_text = "주민번호 앞 여섯자리를 입력하시거나 '상담'이라고 말씀해주세요."
+            retry_text = "주민번호 앞 여섯자리를 입력해주세요."
             self.client_state['retry_count'] = retry_count + 1
             await azure_text_to_speech(retry_text, self)
             logger.info(f"재안내 실행 ({retry_count + 1}/{self.client_state['max_retries']})")
@@ -270,6 +255,3 @@ class KioskWebSocketConsumer(AsyncWebsocketConsumer):
         await azure_text_to_speech(error_message, self)
         self.client_state['step'] = 'listening'
         self.client_state['retry_count'] = 0
-
-
-    

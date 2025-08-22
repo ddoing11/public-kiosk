@@ -179,15 +179,15 @@
 </head>
 <body>
     <div id="audio-unlock-overlay"></div>
-    <button class="back-button" onclick="window.location.href='/kiosk/idle/'">← 처음으로</button>
+    <button class.back-button" onclick="window.location.href='/kiosk/idle/'">← 처음으로</button>
     
     <div class="container">
         <div class="header">
             <h1>🏥 병원 서류 출력 서비스</h1>
-            <p>원하시는 방법을 선택해주세요</p>
+            <p>먼저 본인 확인을 진행해주세요</p>
         </div>
         
-        <div class="options-container">
+        <div class="options-container" style="grid-template-columns: 1fr;">
             <div class="option-card id-input-section">
                 <h3>📝 주민번호로 신원확인</h3>
                 
@@ -195,13 +195,7 @@
                     {% csrf_token %}
                     <p>주민번호 앞 6자리를 입력해주세요</p>
                     <div class="birth-input">
-                        <input type="text" name="birth_digit_1" class="birth-digit" maxlength="1" pattern="[0-9]" data-index="0">
-                        <input type="text" name="birth_digit_2" class="birth-digit" maxlength="1" pattern="[0-9]" data-index="1">
-                        <input type="text" name="birth_digit_3" class="birth-digit" maxlength="1" pattern="[0-9]" data-index="2">
-                        <input type="text" name="birth_digit_4" class="birth-digit" maxlength="1" pattern="[0-9]" data-index="3">
-                        <input type="text" name="birth_digit_5" class="birth-digit" maxlength="1" pattern="[0-9]" data-index="4">
-                        <input type="text" name="birth_digit_6" class="birth-digit" maxlength="1" pattern="[0-9]" data-index="5">
-                    </div>
+                        </div>
                     <button type="submit" id="birthSubmitBtn" class="verify-button" disabled>1차 검색</button>
                 </form>
 
@@ -213,28 +207,15 @@
                 </div>
             </div>
             
-            <div class="option-card consultation-section">
-                <h3>🎤 음성 상담 서비스</h3>
-                <p id="consultation-status">시스템 준비 중...</p>
-                <div class="mic-indicator" id="mic-indicator">🎤</div>
-                <p style="font-size: 16px; color: #28a745; margin-top: 10px;" id="instruction-text">
-                    음성 안내를 들으신 후 말씀해주세요
-                </p>
             </div>
-        </div>
 
-        <div class="gpt-response" id="gpt-response">
-            <h4>💬 상담원 응답:</h4>
-            <div id="gpt-content"></div>
-        </div>
-        
         <div class="results-section" id="resultsSection" style="display:none; margin-top: 20px;">
             <h3>🏥 검색 결과</h3>
             <div id="resultsList"></div>
         </div>
         
         <div class="status-bar" id="status-bar">
-            시스템 준비 완료 - 서비스를 선택해주세요
+            시스템 준비 완료 - 본인 확인을 진행해주세요
         </div>
     </div>
 

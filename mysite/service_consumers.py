@@ -1,288 +1,745 @@
 # mysite/service_consumers.py
+# (겹침 방지/마이크 디바운스 + 발급/취소 확인 규칙 + 0건 시 단문 안내 고정 + 상담 라우팅)
+
 import json
 import asyncio
 import logging
-from channels.generic.websocket import AsyncWebsocketConsumer
-from django.conf import settings
-from openai import OpenAI
-from channels.db import database_sync_to_async
 from datetime import date, datetime
+
+from channels.generic.websocket import AsyncWebsocketConsumer
+from channels.db import database_sync_to_async
+from django.conf import settings
+
+from openai import OpenAI
+
 from .models import Medical_Certificate, Prescription, MedicalReceipt
-from .utils import get_gpt_streaming_response, SYSTEM_PROMPT
+from .utils import get_gpt_streaming_response  # 프로젝트 내 스트리밍 유틸
 
-logger = logging.getLogger('kiosk')
-client = OpenAI(api_key=getattr(settings, 'OPENAI_API_KEY', ''))
+logger = logging.getLogger("kiosk")
 
+client = OpenAI(api_key=getattr(settings, "OPENAI_API_KEY", ""))
+DEFAULT_LLM_MODEL = getattr(settings, "LLM_MODEL", "gpt-4o-mini")
+
+
+KIOSK_SYSTEM_PROMPT = """
+당신은 병원 키오스크에서 서류 발급을 도와주는 AI 도우미입니다.
+
+[중요]
+- 이 키오스크에서 진료확인서, 처방전, 진료영수증을 바로 출력할 수 있습니다.
+- "접수처로 가세요" 같은 오프라인 안내는 금지. 항상 키오스크 발급을 우선 안내하세요.
+
+[서류별 기본 용도]
+- 진료확인서: 회사 병가/휴가, 학교 결석, 일반 증명
+- 처방전: 약국 약 수령
+- 진료영수증: 의료비 공제/보험 환급
+
+[응답 원칙]
+- 한글, 1~2문장으로 간결하게.
+- 제출처/용도에 맞게 추천.
+- 모르면 "모릅니다" 대신, 간단한 추가 질문 1문장 제안.
+- 키오스크에서 바로 발급 가능함을 자연스럽게 덧붙임.
+"""
+
+# ------------------------ 조사 보정 ------------------------
+def _josa_iga(noun: str) -> str:
+    if not noun:
+        return "가"
+    code = ord(noun[-1])
+    base = 0xAC00
+    if not (0xAC00 <= code <= 0xD7A3):
+        return "가"
+    jong = (code - base) % 28
+    return "이" if jong != 0 else "가"
+
+
+def _josa_eulreul(noun: str) -> str:
+    if not noun:
+        return "를"
+    code = ord(noun[-1])
+    base = 0xAC00
+    if not (0xAC00 <= code <= 0xD7A3):
+        return "를"
+    jong = (code - base) % 28
+    return "을" if jong != 0 else "를"
+
+
+# ------------------------ 단발 LLM ------------------------
+async def llm_chat_once(
+    user_text: str,
+    system_prompt: str = KIOSK_SYSTEM_PROMPT,
+    max_tokens: int = 120,
+    temperature: float = 0.3,
+) -> str:
+    try:
+        resp = client.chat.completions.create(
+            model=DEFAULT_LLM_MODEL,
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_text},
+            ],
+            max_tokens=max_tokens,
+            temperature=temperature,
+        )
+        text = resp.choices[0].message.content.strip()
+        text = text.replace("확인서이", "확인서가").replace("확인서을", "확인서를")
+        return text
+    except Exception as e:
+        logger.error(f"LLM call error: {e}")
+        return "요청을 처리하는 동안 문제가 발생했습니다. 다시 한 번 말씀해 주세요."
+
+
+# ------------------------ 컨슈머 ------------------------
 class ServiceWebSocketConsumer(AsyncWebsocketConsumer):
-    """GPT 기반 스마트 서류 인식 Consumer"""
-    
+    """TTS 겹침 방지/마이크 디바운스/확인 규칙 강제 컨슈머"""
+
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
+        # 인스턴스 로거 (self.logger 사용 보장)
+        self.logger = logger
+
         self.selected_patient = None
+        # step: listening/advising/waiting_for_issue_confirmation/date_selection
         self.client_state = {}
+        self.recognition_failure_count = 0
+        self.current_context = {}
+
+        # 에코/쿨다운/마이크 관리
+        self.recent_tts_content = ""
+        self.tts_completed_time = 0.0
+        self.voice_delay = 2.5  # 서버측 쿨다운(초)
+
+        # TTS → mic.on 통일 관리를 위한 플래그/디바운스
+        self.awaiting_tts = False
+        self.last_mic_on_ts = 0.0
+        self.mic_on_min_interval = 0.8  # 초
+
+        # 모델 매핑
         self.doc_type_model_map = {
             "진료확인서": Medical_Certificate,
             "처방전": Prescription,
             "진료영수증": MedicalReceipt,
         }
         self.FIELD_MAP = {
-            "진료확인서": [("환자명", "patient_name"), ("환자번호", "patient_id"), ("성별", "gender"), ("생년월일", "birth_date"), ("연락처", "contact"), ("주소", "address")],
-            "처방전": [("환자명", "patient_name"), ("환자번호", "patient_id"), ("성별", "gender"), ("생년월일", "birth_date"), ("연락처", "contact"), ("처방일", "prescription_date"), ("담당의", "doctor_name"), ("진료과", "department"), ("병원명", "hospital_name")],
-            "진료영수증": [("환자명", "patient_name"), ("환자번호", "patient_id"), ("성별", "gender"), ("생년월일", "birth_date"), ("영수일", "receipt_date")],
+            "진료확인서": [
+                ("환자명", "patient_name"),
+                ("환자번호", "patient_id"),
+                ("성별", "gender"),
+                ("생년월일", "birth_date"),
+                ("연락처", "contact"),
+                ("주소", "address"),
+            ],
+            "처방전": [
+                ("환자명", "patient_name"),
+                ("환자번호", "patient_id"),
+                ("성별", "gender"),
+                ("생년월일", "birth_date"),
+                ("연락처", "contact"),
+                ("처방일", "prescription_date"),
+                ("담당의", "doctor_name"),
+                ("진료과", "department"),
+                ("병원명", "hospital_name"),
+            ],
+            "진료영수증": [
+                ("환자명", "patient_name"),
+                ("환자번호", "patient_id"),
+                ("성별", "gender"),
+                ("생년월일", "birth_date"),
+                ("영수일", "receipt_date"),
+            ],
         }
 
     def _fmt(self, v):
-        if isinstance(v, datetime): return v.strftime("%Y-%m-%d %H:%M:%S")
-        if isinstance(v, date): return v.strftime("%Y-%m-%d")
+        if isinstance(v, datetime):
+            return v.strftime("%Y-%m-%d %H:%M:%S")
+        if isinstance(v, date):
+            return v.strftime("%Y-%m-%d")
         return v
 
+    # ------------- 연결 -------------
     async def connect(self):
         await self.accept()
-        self.client_state = {'step': 'listening'}
-        logger.info("Service WebSocket connected")
-        self.selected_patient = self.scope['session'].get('selected_patient', None)
+        self.client_state = {"step": "listening"}
+        self.current_context = {"previous_inputs": [], "submit_to": None}
+        self.logger.info("Service WebSocket connected")
+
+        self.selected_patient = self.scope["session"].get("selected_patient", None)
         if self.selected_patient:
-            logger.info(f"Authenticated user: {self.selected_patient.get('patient_name')}")
-            await self.send_message('patient.info', {'patient': self.selected_patient})
+            self.logger.info(
+                f"Authenticated user: {self.selected_patient.get('patient_name')}"
+            )
+            await self.send_message("patient.info", {"patient": self.selected_patient})
+
+        await self.send_message("voice.mode", {"allow_short_input": False})
         await asyncio.sleep(1)
         await self.start_voice_guidance()
-    
+
     async def disconnect(self, close_code):
-        logger.info(f"Service WebSocket disconnected: {close_code}")
-    
+        self.logger.info(f"Service WebSocket disconnected: {close_code}")
+
+    # ------------- 수신 -------------
     async def receive(self, text_data):
         try:
             data = json.loads(text_data)
-            message_type = data.get('type')
-            if message_type == 'voice.input':
-                await self.process_voice_input(data.get('text', ''))
-            elif message_type == 'service.select':
-                if data.get('service') == '상담':
-                    await self.start_consultation()
+            msg_type = data.get("type")
+
+            if msg_type in ("voice.input", "stt.result"):
+                await self.process_voice_input(data.get("text", ""))
+
+            elif msg_type == "service.select":
+                if data.get("service") == "상담":
+                    await self.start_smart_consultation("", None)
                 else:
-                    await self.process_service_selection(data.get('service', ''))
+                    await self.process_service_selection(data.get("service", ""))
+
+            elif msg_type == "recognition.failed":
+                await self.handle_recognition_failure(data.get("error", "unknown"))
+
+            elif msg_type == "tts.complete":
+                # 클라이언트에서 TTS가 실제 완료되었을 때만 마이크를 켠다
+                self.logger.info("TTS 완료 신호 수신")
+                self.tts_completed_time = asyncio.get_event_loop().time()
+                self.awaiting_tts = False
+
+                now = asyncio.get_event_loop().time()
+                if (now - self.last_mic_on_ts) >= self.mic_on_min_interval:
+                    await asyncio.sleep(0.2)
+                    await self.send_message("mic.on")
+                    self.last_mic_on_ts = asyncio.get_event_loop().time()
+                else:
+                    self.logger.info("mic.on 디바운스에 의해 생략")
+
+            else:
+                self.logger.warning(f"알 수 없는 메시지 타입: {msg_type}")
         except Exception as e:
-            logger.error(f"Error processing message: {str(e)}")
-    
+            self.logger.error(f"Error processing message: {str(e)}")
+
+    # ------------- 공통 송신 -------------
+    async def send_message(self, msg_type, data=None):
+        message = {"type": msg_type, **(data or {})}
+        await self.send(text_data=json.dumps(message))
+
+    async def send_error(self, error_message):
+        await self.send_message("error", {"message": error_message})
+
+    async def send_tts_with_tracking(self, text):
+        # 서버가 먼저 mic.off → 그 다음 tts.text (레이스 조건 방지)
+        await self.send_message("mic.off")
+        self.recent_tts_content = text
+        self.awaiting_tts = True
+        await self.send_message("tts.text", {"text": text})
+
+    # ------------- 최초 안내 -------------
     async def start_voice_guidance(self):
         guidance_text = "진료확인서, 처방전, 진료영수증 중 원하는 서류를 말씀해주세요."
-        await self.send_message('tts.text', {'text': guidance_text})
+        await self.send_tts_with_tracking(guidance_text)
 
-    async def analyze_input_with_gpt(self, text):
-        """GPT를 이용해 사용자 입력을 분석"""
-        logger.info(f"GPT 분석 시작: '{text}'")
-        
+    # ------------- 입력 처리 -------------
+    async def process_voice_input(self, text):
+        if not (text or "").strip():
+            return
+
+        current_step = self.client_state.get("step")
+        now = asyncio.get_event_loop().time()
+
+        # TTS 직후 쿨다운
+        if (now - self.tts_completed_time) < self.voice_delay:
+            self.logger.info(f"TTS 완료 후 {self.voice_delay}초 이내 입력 무시: '{text}'")
+            return
+
+        # TTS와 유사한 자기 에코 무시
+        if self.recent_tts_content:
+            tts_keywords = set(self.recent_tts_content.split())
+            input_keywords = set((text or "").split())
+            if len(tts_keywords.intersection(input_keywords)) >= 3:
+                self.logger.info(f"자기 TTS 에코로 판단하여 무시: '{text}'")
+                return
+
+        self.logger.info(f"음성 입력: '{text}' (상태: {current_step})")
+        self.recognition_failure_count = 0
+
+        try:
+            if current_step == "waiting_for_issue_confirmation":
+                await self.handle_issue_confirmation(text)
+                return
+
+            if current_step == "date_selection":
+                await self.handle_date_selection_input(text)
+                return
+
+            analysis = await self.analyze_input_with_context(text)
+
+            # 🔧 키워드 기반 오분류 교정(LLM이 '확인서'→'확인'으로 분류하는 케이스 방지)
+            lower = (text or "").lower().replace(" ", "")
+            if "확인서" in lower or "증명서" in lower:
+                analysis.update({"category": "진료확인서", "intent": "서류요청"})
+            elif "처방전" in lower:
+                analysis.update({"category": "처방전", "intent": "서류요청"})
+            elif "진료영수증" in lower or "영수증" in lower:
+                analysis.update({"category": "진료영수증", "intent": "서류요청"})
+
+            self.logger.info(f"분석 결과: {analysis}")
+            await self.handle_analysis_result(analysis, text)
+
+        except Exception as e:
+            self.logger.error(f"음성 입력 처리 오류: {str(e)}")
+            await self.send_tts_with_tracking("다시 말씀해주세요.")
+
+    # ------------- LLM 분류 -------------
+    async def analyze_input_with_context(self, text: str) -> dict:
+        self.logger.info(f"컨텍스트 기반 GPT 분석 시작: '{text}'")
+        self.current_context.setdefault("previous_inputs", []).append(text)
+        if len(self.current_context["previous_inputs"]) > 5:
+            self.current_context["previous_inputs"] = self.current_context[
+                "previous_inputs"
+            ][-5:]
+
         try:
             prompt = f"""
 사용자 입력: "{text}"
 
-다음 중 하나로 분류해주세요:
-1. 진료확인서 - 회사, 학교, 직장 제출용 서류나 진료확인서/증명서를 요청하는 경우
-2. 처방전 - 처방전, 처방서, 약 관련 서류를 요청하는 경우  
-3. 진료영수증 - 영수증, 진료영수증, 보험 관련 서류를 요청하는 경우
-4. 상담 - 문의, 질문, 도움, 설명을 요청하거나 어떤 서류인지 묻는 경우
-5. 기타 - 위에 해당하지 않는 경우
+[중요 컨텍스트: 병원 키오스크에서 바로 서류를 출력할 수 있습니다.]
 
-정확히 하나의 단어로만 답변하세요: 진료확인서, 처방전, 진료영수증, 상담, 기타
+아래 JSON으로만 답하세요:
+
+{{
+  "category": "진료확인서|처방전|진료영수증|상담|확인|취소|기타",
+  "submit_to": "회사|학교|보험사|약국|기타|null",
+  "intent": "서류요청|상담요청|긍정응답|부정응답|기타",
+  "confidence": 0.9
+}}
+
+[규칙 요약]
+- 회사/직장/병가/휴가 → 진료확인서 (submit_to=회사)
+- 학교/결석 → 진료확인서 (submit_to=학교)
+- 보험/환급/공제 → 진료영수증 (submit_to=보험사)
+- 약국/약/처방 → 처방전 (submit_to=약국)
+- '뭐가/어떤 서류/차이/방법/증명/어떻게/왜/언제' → 상담
+- '네/예/발급/진행/좋아' → 확인
+- '아니/취소/싫어/안해' → 취소
+
+특별 처리:
+- '회사에 제출할 서류' → 진료확인서, 회사
+- '아프다/다쳤다' + '증명' → 진료확인서
 """
-            
             response = client.chat.completions.create(
-                model="gpt-4o-mini",
+                model=DEFAULT_LLM_MODEL,
                 messages=[{"role": "user", "content": prompt}],
-                max_tokens=10,
-                temperature=0.1
+                max_tokens=80,
+                temperature=0.1,
             )
-            
-            result = response.choices[0].message.content.strip()
-            logger.info(f"GPT 분석 결과: '{result}'")
-            
-            return result
-            
-        except Exception as e:
-            logger.error(f"GPT 분석 오류: {str(e)}")
-            return "기타"
+            result_text = response.choices[0].message.content.strip()
+            if result_text.startswith("```"):
+                result_text = (
+                    result_text.replace("```json", "").replace("```", "").strip()
+                )
+            result = json.loads(result_text)
+            self.logger.info(f"GPT 분석 결과: {result}")
 
-    async def process_voice_input(self, text):
-        """GPT 기반 스마트 음성 입력 처리"""
-        current_step = self.client_state.get('step')
-        logger.info(f"음성 입력: '{text}' (상태: {current_step})")
-        
-        try:
-            # GPT로 입력 분석
-            analysis_result = await self.analyze_input_with_gpt(text)
-            logger.info(f"분석 결과: {analysis_result}")
-            
-            # 서류 타입인 경우 바로 조회
-            if analysis_result in ['진료확인서', '처방전', '진료영수증']:
-                logger.info(f"서류 조회: {analysis_result}")
-                await self.send_message('document.recognized', {'document_type': analysis_result})
-                await self.query_database(analysis_result)
-                return
-            
-            # 상담 요청인 경우
-            if analysis_result == '상담':
-                logger.info("상담 모드 시작")
-                await self.start_smart_consultation(text)
-                return
-            
-            # 상담 모드에서의 추가 입력 처리
-            if current_step == 'advising':
-                logger.info("상담 중 추가 입력 처리")
-                await self.continue_smart_consultation(text)
-                return
-            
-            # 기타인 경우
-            logger.info("알 수 없는 입력")
-            await self.send_message('tts.text', {'text': "진료확인서, 처방전, 진료영수증 중 하나를 말씀해주세요."})
-            
-        except Exception as e:
-            logger.error(f"음성 입력 처리 오류: {str(e)}")
-            await self.send_message('tts.text', {'text': "다시 말씀해주세요."})
-
-    async def start_smart_consultation(self, user_input):
-        """스마트 상담 시작 - 질문에 따라 바로 서류 추천"""
-        logger.info(f"스마트 상담 시작: '{user_input}'")
-        self.client_state['step'] = 'advising'
-        await self.send_message('status', {'state': 'advising'})
-        
-        # 서류 추천을 위한 GPT 분석
-        recommendation = await self.get_document_recommendation(user_input)
-        
-        if recommendation != '기타':
-            # 바로 서류 추천하고 조회
-            messages = {
-                '진료확인서': '회사 제출용으로는 진료확인서가 필요합니다.',
-                '처방전': '약국에서는 처방전이 필요합니다.',
-                '진료영수증': '보험 청구용으로는 진료영수증이 필요합니다.'
+            # 현재 발화에 명시된 제출처만 유지 (명시 없으면 'null'로)
+            explicit_map = {
+                "회사": ["회사", "직장", "병가", "휴가"],
+                "학교": ["학교", "대학", "결석", "수업"],
+                "보험사": ["보험", "환급", "공제", "청구", "보상"],
+                "약국": ["약국", "약", "처방", "복용"],
             }
-            await self.send_message('tts.text', {'text': messages[recommendation]})
-            await self.query_database(recommendation)
-        else:
-            # 일반 상담
-            await self.send_message('tts.text', {'text': '무엇을 도와드릴까요?'})
+            explicit_submit = None
+            low = (text or "").lower()
+            for k, kws in explicit_map.items():
+                if any(kw in low for kw in kws):
+                    explicit_submit = k
+                    break
 
-    async def get_document_recommendation(self, text):
-        """사용자 질문에서 추천할 서류 분석"""
-        logger.info(f"서류 추천 분석: '{text}'")
-        
+            if explicit_submit:
+                self.current_context["submit_to"] = explicit_submit
+                result["submit_to"] = explicit_submit
+            else:
+                result["submit_to"] = "null"
+
+            return result
+        except Exception as e:
+            self.logger.error(f"GPT 분석 오류: {e}")
+            return self.fallback_analysis(text)
+
+    def fallback_analysis(self, text: str) -> dict:
+        t = (text or "").lower().strip()
+        self.logger.info(f"백업 분석 사용: '{t}'")
+
+        if any(d in t for d in ["진료확인서", "확인서", "증명서"]):
+            return {
+                "category": "진료확인서",
+                "intent": "서류요청",
+                "confidence": 0.95,
+                "submit_to": "null",
+            }
+        if any(d in t for d in ["처방전", "처방서"]):
+            return {
+                "category": "처방전",
+                "intent": "서류요청",
+                "confidence": 0.95,
+                "submit_to": "null",
+            }
+        if any(d in t for d in ["진료영수증", "영수증"]):
+            return {
+                "category": "진료영수증",
+                "intent": "서류요청",
+                "confidence": 0.95,
+                "submit_to": "null",
+            }
+
+        consult_kw = [
+            "뭐가 있어",
+            "어떤 서류",
+            "방법",
+            "차이",
+            "언제",
+            "왜",
+            "설명",
+            "알려",
+            "증명",
+            "무슨 서류",
+            "내야",
+        ]
+        if any(k in t for k in consult_kw):
+            return {
+                "category": "상담",
+                "intent": "상담요청",
+                "confidence": 0.9,
+                "submit_to": "null",
+            }
+
+        if any(p in t for p in ["네", "예", "응", "좋아", "발급", "진행", "그래", "맞아"]):
+            return {
+                "category": "확인",
+                "intent": "긍정응답",
+                "confidence": 0.9,
+                "submit_to": "null",
+            }
+        if any(n in t for n in ["아니", "아니요", "싫어", "취소", "안해"]):
+            return {
+                "category": "취소",
+                "intent": "부정응답",
+                "confidence": 0.9,
+                "submit_to": "null",
+            }
+
+        return {"category": "기타", "intent": "기타", "confidence": 0.3, "submit_to": "null"}
+
+    # ------------- 분석 결과 처리 -------------
+    async def handle_analysis_result(self, analysis: dict, original_text: str):
+        category = analysis.get("category", "기타")
+        intent = analysis.get("intent", "기타")
+        submit_to_analyzed = analysis.get("submit_to")
+
+        # 현재 발화에 제출처가 '명시'된 경우만 사용
+        explicit_tokens = [
+            "회사",
+            "학교",
+            "보험",
+            "약국",
+            "직장",
+            "병가",
+            "휴가",
+            "결석",
+            "공제",
+            "청구",
+            "보상",
+        ]
+        explicit_present = any(tok in (original_text or "") for tok in explicit_tokens)
+        submit_to = (
+            submit_to_analyzed
+            if (explicit_present and submit_to_analyzed not in (None, "null", "기타"))
+            else None
+        )
+
+        consult_triggers = [
+            "증명",
+            "어떤서류",
+            "무슨서류",
+            "뭐가",
+            "방법",
+            "어떻게",
+            "왜",
+            "차이",
+            "필요한서류",
+            "내야돼",
+            "내야해",
+        ]
+        if any(k in (original_text or "").replace(" ", "") for k in consult_triggers):
+            self.logger.info("상담성 질문 감지 → 스마트 상담으로 라우팅")
+            await self.start_smart_consultation(original_text, submit_to)
+            return
+
+        if category in ["진료확인서", "처방전", "진료영수증"]:
+            self.logger.info(f"서류 직접 요청으로 처리: {category} (제출처: {submit_to})")
+            await self.send_message("document.recognized", {"document_type": category})
+            await self.query_database(category, submit_to)
+            return
+
+        if category == "상담" or intent == "상담요청":
+            self.logger.info(f"상담 모드로 처리 (제출처: {submit_to})")
+            await self.start_smart_consultation(original_text, submit_to)
+            return
+
+        if category in ["확인", "취소"]:
+            self.logger.info(f"확인/취소 응답 처리: {category}")
+            await self.handle_unexpected_confirmation(category)
+            return
+
+        self.logger.info(f"기타 질문 → 일반 GPT 상담으로 처리: {original_text}")
+        await self.start_general_gpt_consultation(original_text)
+
+    # ------------- 발급 확인 -------------
+    async def handle_issue_confirmation(self, text: str):
+        self.logger.info(f"발급 의사 확인 응답(규칙 매칭): '{text}'")
+        t = (text or "").replace(" ", "")
+
+        issue_synonyms = ["발급", "출력", "진행", "해줘", "해주세요", "바로해", "진행해", "출력해"]
+        if any(s in t for s in issue_synonyms):
+            self.logger.info("발급 의사 확정 → 날짜 선택")
+            self.client_state["step"] = "date_selection"
+            await self.send_message("voice.mode", {"allow_short_input": True})
+            await self.send_tts_with_tracking(
+                "날짜를 선택해주세요. 원하는 날짜를 말씀하시거나 '취소'라고 말씀해주세요."
+            )
+            return
+
+        cancel_synonyms = ["취소", "그만", "안해", "안해요", "안할래", "아니", "아니요", "중단"]
+        if any(s in t for s in cancel_synonyms):
+            self.logger.info("발급 취소")
+            self.client_state["step"] = "listening"
+            await self.send_message("voice.mode", {"allow_short_input": False})
+            await self.send_tts_with_tracking("다른 서류가 필요하시면 말씀해주세요.")
+            return
+
+        await self.send_tts_with_tracking("발급 또는 취소라고 말씀해주세요.")
+
+    # ------------- 날짜 선택 -------------
+    async def handle_date_selection_input(self, text: str):
+        analysis = await self.analyze_input_with_context(text)
+        if analysis.get("category") == "취소":
+            self.client_state["step"] = "listening"
+            await self.send_message("voice.mode", {"allow_short_input": False})
+            await self.send_tts_with_tracking("다른 서류가 필요하시면 말씀해주세요.")
+        else:
+            await self.send_message("voice.mode", {"allow_short_input": False})
+            await self.send_tts_with_tracking("선택하신 날짜로 키오스크에서 발급 처리하겠습니다.")
+
+    # ------------- 예기치 않은 확인/취소 -------------
+    async def handle_unexpected_confirmation(self, category: str):
+        if category == "확인":
+            await self.send_tts_with_tracking("발급 또는 취소라고 말씀해주세요.")
+        else:
+            self.client_state["step"] = "listening"
+            await self.send_tts_with_tracking("원하는 서류를 말씀해주세요.")
+
+    # ------------- 상담 -------------
+    async def start_smart_consultation(self, user_input: str, submit_to: str | None = None):
+        self.logger.info(f"스마트 상담 시작: '{user_input}' (제출처: {submit_to})")
+        self.client_state["step"] = "advising"
+        await self.send_message("status", {"state": "advising"})
+
+        if await self.is_complex_consultation_needed(user_input):
+            self.logger.info("복잡 → GPT 스트리밍 상담")
+            await self.handle_general_consultation(user_input)
+            return
+
+        rec = await self.get_smart_document_recommendation(user_input, submit_to)
+        self.logger.info(f"서류 추천 결과: {rec}")
+
+        if rec.get("document_type") != "기타":
+            response_text = await self.generate_contextual_response(
+                rec["document_type"], submit_to or rec.get("submit_to", "기타"), user_input
+            )
+            await self.send_tts_with_tracking(response_text)
+        else:
+            await self.handle_general_consultation(user_input)
+
+    async def start_general_gpt_consultation(self, user_input: str):
+        self.logger.info(f"일반 GPT 상담 시작: '{user_input}'")
+        self.client_state["step"] = "advising"
+        await self.send_message("status", {"state": "advising"})
+        await self.handle_general_consultation(user_input)
+
+    async def is_complex_consultation_needed(self, user_input: str) -> bool:
         try:
             prompt = f"""
-사용자 질문: "{text}"
+사용자 질문: "{user_input}"
 
-이 질문에서 추천할 서류를 판단해주세요:
+이 질문이 다음 중 무엇인지 판단하세요:
+1) 단순 서류 요청
+2) 복잡한 상담 필요
 
-- 회사, 직장, 학교, 제출, 증명 관련 → 진료확인서
-- 약, 처방, 약국, 복용 관련 → 처방전  
-- 보험, 청구, 환급, 비용, 돈 관련 → 진료영수증
-- 위에 해당 없으면 → 기타
-
-정확히 하나의 단어로만 답변: 진료확인서, 처방전, 진료영수증, 기타
+JSON만: {{"needs_consultation": true/false, "reason": "설명"}}
 """
-            
-            response = client.chat.completions.create(
-                model="gpt-4o-mini",
+            resp = client.chat.completions.create(
+                model=DEFAULT_LLM_MODEL,
                 messages=[{"role": "user", "content": prompt}],
-                max_tokens=10,
-                temperature=0.1
+                max_tokens=80,
+                temperature=0.1,
             )
-            
-            result = response.choices[0].message.content.strip()
-            logger.info(f"추천 결과: {result}")
-            return result
-            
+            txt = resp.choices[0].message.content.strip()
+            if txt.startswith("```"):
+                txt = txt.replace("```json", "").replace("```", "").strip()
+            data = json.loads(txt)
+            self.logger.info(f"상담 복잡도 분석 결과: {data}")
+            return bool(data.get("needs_consultation", False))
         except Exception as e:
-            logger.error(f"추천 분석 오류: {str(e)}")
-            return "기타"
+            self.logger.error(f"상담 복잡도 분석 오류: {e}")
+            return True
 
-    async def continue_smart_consultation(self, user_input):
-        """스마트 상담 진행"""
-        logger.info(f"스마트 상담 진행: '{user_input}'")
-        
-        # 먼저 서류 요청인지 다시 확인
-        analysis_result = await self.analyze_input_with_gpt(user_input)
-        if analysis_result in ['진료확인서', '처방전', '진료영수증']:
-            logger.info(f"상담 중 서류 요청: {analysis_result}")
-            await self.send_message('document.recognized', {'document_type': analysis_result})
-            await self.query_database(analysis_result)
-            return
-        
-        # 서류 추천 가능한지 확인
-        recommendation = await self.get_document_recommendation(user_input)
-        if recommendation != '기타':
-            logger.info(f"상담 중 서류 추천: {recommendation}")
-            messages = {
-                '진료확인서': '회사 제출용으로는 진료확인서가 필요합니다.',
-                '처방전': '약국에서는 처방전이 필요합니다.',
-                '진료영수증': '보험 청구용으로는 진료영수증이 필요합니다.'
-            }
-            await self.send_message('tts.text', {'text': messages[recommendation]})
-            await self.query_database(recommendation)
-            return
-        
-        # 일반적인 GPT 상담
-        await self.send_message('mic.off')
+    async def get_smart_document_recommendation(
+        self, text: str, submit_to: str | None = None
+    ) -> dict:
+        self.logger.info(f"GPT 서류 추천 분석: '{text}' (제출처: {submit_to})")
+        try:
+            prompt = f"""
+사용자: "{text}"
+제출처: {submit_to or "미지정"}
+
+[키오스크] 진료확인서/처방전/진료영수증 바로 출력 가능.
+
+JSON만: {{"document_type": "진료확인서|처방전|진료영수증|기타", "submit_to": "회사|학교|보험사|약국|기타"}}
+
+[기준]
+- 회사/직장 → 진료확인서
+- 학교 → 진료확인서
+- 보험/환급/공제 → 진료영수증
+- 약국/처방 → 처방전
+- 일반 증명/아프다 증명 → 진료확인서
+"""
+            resp = client.chat.completions.create(
+                model=DEFAULT_LLM_MODEL,
+                messages=[{"role": "user", "content": prompt}],
+                max_tokens=40,
+                temperature=0.1,
+            )
+            txt = resp.choices[0].message.content.strip()
+            if txt.startswith("```"):
+                txt = txt.replace("```json", "").replace("```", "").strip()
+            data = json.loads(txt)
+            self.logger.info(f"GPT 추천 결과: {data}")
+            return data
+        except Exception as e:
+            self.logger.error(f"GPT 추천 분석 오류: {e}")
+            return {"document_type": "진료확인서", "submit_to": "기타"}
+
+    async def handle_general_consultation(self, user_input: str):
+        """스트리밍 상담. 마이크 on은 오직 tts.complete에서만!"""
+        await self.send_message("mic.off")
         try:
             chunks = []
-            async for delta, is_done in get_gpt_streaming_response(user_input, system_prompt=SYSTEM_PROMPT):
+            async for delta, is_done in get_gpt_streaming_response(
+                user_input, system_prompt=KIOSK_SYSTEM_PROMPT
+            ):
                 if not is_done:
                     chunks.append(delta)
-                    await self.send_message('gpt.stream', {'delta': delta})
+                    await self.send_message("gpt.stream", {"delta": delta})
                 else:
-                    full_response = ''.join(chunks)
-                    await self.send_message('gpt.stream', {'event': 'done', 'full_text': full_response})
+                    full = "".join(chunks).strip()
+                    self.recent_tts_content = full
+                    self.awaiting_tts = True
+                    await self.send_message("gpt.stream", {"event": "done", "full_text": full})
         except Exception as e:
-            logger.error(f"상담 오류: {str(e)}")
-            await self.send_message('tts.text', {'text': '다시 질문해주세요.'})
+            self.logger.error(f"상담 오류: {e}")
+            await self.send_tts_with_tracking("다시 질문해주세요.")
 
-    async def process_service_selection(self, service_name):
-        await self.query_database(service_name)
-    
-    async def query_database(self, doc_type):
+    async def generate_contextual_response(
+        self, document_type: str, submit_to: str | None, user_context=None
+    ) -> str:
         try:
-            logger.info(f"DB 조회: {doc_type}")
+            if submit_to and submit_to not in ("기타", "null"):
+                mapping = {
+                    "회사": f"회사 제출용은 {document_type}{_josa_eulreul(document_type)} 준비하시면 됩니다. 키오스크에서 바로 발급해 드릴게요.",
+                    "학교": f"학교 제출용은 {document_type}{_josa_eulreul(document_type)} 준비하시면 됩니다. 즉시 출력 가능합니다.",
+                    "보험사": f"보험 청구용은 {document_type}{_josa_eulreul(document_type)} 준비해 주세요. 바로 발급해 드릴게요.",
+                    "약국": f"약국에서 약을 받으시려면 {document_type}{_josa_eulreul(document_type)} 지참하세요. 키오스크에서 출력해 드릴게요.",
+                }
+                return mapping.get(
+                    submit_to,
+                    f"{submit_to} 제출용으로 {document_type}{_josa_eulreul(document_type)} 준비해 주세요. 키오스크에서 발급 가능합니다.",
+                )
+            else:
+                return f"{document_type}{_josa_eulreul(document_type)} 조회해서 키오스크에서 출력해 드리겠습니다."
+        except Exception as e:
+            self.logger.error(f"컨텍스트 응답 생성 오류: {e}")
+            return f"{document_type}{_josa_eulreul(document_type)} 찾아서 발급해 드리겠습니다."
+
+    # ------------- DB 조회 -------------
+    async def query_database(self, doc_type: str, submit_to: str | None = None):
+        """조회 결과에 맞춰 TTS 1회만 송출 (0건 시 GPT 호출 금지)"""
+        try:
+            self.logger.info(f"DB 조회: {doc_type} (제출처: {submit_to})")
             model_class = self.doc_type_model_map.get(doc_type)
             if not model_class:
-                await self.send_message('tts.text', {'text': f'{doc_type}는 준비 중입니다.'})
+                await self.send_tts_with_tracking(f"{doc_type}는 준비 중입니다.")
                 return
 
             patient_filter = {}
             if self.selected_patient:
-                patient_filter['patient_id'] = self.selected_patient.get('patient_id')
-            
+                patient_filter["patient_id"] = self.selected_patient.get("patient_id")
+
             field_map = self.FIELD_MAP.get(doc_type, [])
-            results = await self.fetch_all_generic(model_class, field_map, filters=patient_filter)
-            logger.info(f"조회 결과: {len(results)}건")
-            
-            await self.send_message('db.results', {'results': results})
+            results = await self.fetch_all_generic(
+                model_class, field_map, filters=patient_filter
+            )
+            self.logger.info(f"조회 결과: {len(results)}건")
+
+            await self.send_message("db.results", {"results": results})
 
             if results:
-                await self.send_message('tts.text', {'text': f"{doc_type} {len(results)}건을 찾았습니다."})
+                confirmation_text = await self.generate_confirmation_message(
+                    doc_type, len(results), submit_to
+                )
+                self.client_state["step"] = "waiting_for_issue_confirmation"
+                self.client_state["pending_document_type"] = doc_type
+                await self.send_message("voice.mode", {"allow_short_input": True})
+                await self.send_tts_with_tracking(confirmation_text)
             else:
-                await self.send_message('tts.text', {'text': f"조회된 {doc_type}이 없습니다."})
+                # 0건: 단문 + 명확한 CTA (제출처는 현재 발화에 명시된 경우에만)
+                base = f"조회된 {doc_type}{_josa_iga(doc_type)} 없습니다. 다른 서류를 발급하시려면 서류명을 말씀해주세요."
+                if doc_type == "진료확인서":
+                    base = "조회된 진료확인서가 없습니다. 다른 서류를 발급하시려면 서류명을 말씀해주세요."
+                if submit_to and submit_to not in ("기타", "null"):
+                    base = f"{submit_to} 제출용 {doc_type}{_josa_eulreul(doc_type)} 찾지 못했어요. 다른 서류를 발급하시려면 서류명을 말씀해주세요."
+
+                self.client_state["step"] = "listening"
+                await self.send_message("voice.mode", {"allow_short_input": False})
+                await self.send_tts_with_tracking(base)
+
         except Exception as e:
-            logger.exception("DB query error")
+            self.logger.exception("DB query error")
             await self.send_error("DB 조회 중 오류가 발생했습니다.")
-            
+
+    async def generate_confirmation_message(
+        self, doc_type: str, count: int, submit_to: str | None
+    ) -> str:
+        prefix = f"{submit_to} 제출용 " if submit_to and submit_to not in ("기타", "null") else ""
+        return f"{prefix}{doc_type} {count}건을 찾았습니다. 키오스크에서 발급하시겠습니까? '발급' 또는 '취소'라고 말씀해주세요."
+
+    # ------------- ORM 접근 -------------
     @database_sync_to_async
     def fetch_all_generic(self, model_class, field_map, filters=None):
         qs = model_class.objects.all()
-        if filters: qs = qs.filter(**filters)
-        
-        order_fields = []
-        candidates = ["prescription_date", "receipt_date", "id"]
-        model_fields = {f.name for f in model_class._meta.get_fields()}
-        for c in candidates:
-            if c in model_fields:
-                order_fields.append(f"-{c}")
-                break
-        if order_fields: qs = qs.order_by(*order_fields)
+        if filters:
+            qs = qs.filter(**filters)
 
-        rows = [{out_key: self._fmt(getattr(obj, attr, None)) for out_key, attr in field_map} for obj in qs[:100]]
+        order_candidates = ["prescription_date", "receipt_date", "id"]
+        model_fields = {f.name for f in model_class._meta.get_fields()}
+        for c in order_candidates:
+            if c in model_fields:
+                qs = qs.order_by(f"-{c}")
+                break
+
+        rows = [
+            {out_key: self._fmt(getattr(obj, attr, None)) for out_key, attr in field_map}
+            for obj in qs[:100]
+        ]
         return rows
-    
-    async def send_message(self, msg_type, data=None):
-        message = {'type': msg_type, **(data or {})}
-        await self.send(text_data=json.dumps(message))
-    
-    async def send_error(self, error_message):
-        await self.send_message('error', {'message': error_message})
+
+    # --------- (선택) 누락될 수 있는 핸들러 안전 스텁 ---------
+    async def process_service_selection(self, service: str):
+        await self.send_tts_with_tracking(f"{service}는 준비 중입니다. 원하는 서류를 말씀해주세요.")
+
+    async def handle_recognition_failure(self, error: str):
+        self.logger.warning(f"recognition.failed: {error}")
+        await self.send_tts_with_tracking("다시 말씀해주세요.")

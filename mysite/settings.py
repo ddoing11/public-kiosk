@@ -88,7 +88,7 @@ DATABASES = {
         'NAME': os.environ.get('DOCUMENT_DB_NAME', 'grihKioskPrj'),
         'USER': os.environ.get('DOCUMENT_DB_USER', 'grih'),
         'PASSWORD': os.environ.get('DOCUMENT_DB_PASSWORD', 'qorhvms4dlsqkd'),
-        'HOST': os.environ.get('DOCUMENT_DB_HOST', 'tagorder.iptime.org'),
+        'HOST': os.environ.get('DOCUMENT_DB_HOST', 'its.iptime.org'),
         'PORT': os.environ.get('DOCUMENT_DB_PORT', '61426'),
         'OPTIONS': {
             'charset': 'utf8mb4',       

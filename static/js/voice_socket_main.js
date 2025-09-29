@@ -1,6 +1,11 @@
-// static/js/voice_socket_main.js (최종 안정화 v3 — 확인 단계 초단기 쿨다운, 마이크 재활성화 보강)
+// static/js/voice_socket_main.js
+// (최종 안정화 v3 — 본인확인 단계에서 “특정 이름만” 빠르게 통과하지 않도록 일반화)
+// - 이름단계/본인확인단계 에코 차단 + 쿨다운 보장
+// - 본인확인: 확인 어구, 대상 이름, **임의의 그럴듯한 이름** 모두 즉시 서버 전송(+즉시 stop)
+// - 서버 TTS 완료 신호 및 클라 TTS 완료 모두 처리
+// - 초기화/재연결/에러 로그 강화
 
-import { speakOnClient, stopTTS } from './modules/azure-tts.js';
+import { speakOnClient } from './modules/azure-tts.js';
 import { updateStatus, displayResults } from './modules/ui-main.js';
 
 /* ==============================
@@ -15,7 +20,9 @@ let ttsPlaying = false;        // TTS 재생 상태
 
 // 에코/쿨다운 방지용
 let lastTTSEndAt = 0;                 // 마지막 TTS 종료 시각(ms)
-let TTS_COOLDOWN_MS = 1400;           // TTS 종료 후 입력 쿨다운(동적으로 조정)
+let TTS_COOLDOWN_MS = 1400;           // 기본 쿨다운
+const TTS_COOLDOWN_MS_DEFAULT = 1400; // 복구용
+const TTS_COOLDOWN_MS_CONFIRM = 250;  // 본인확인 프롬프트 직후 빠른 응답 허용
 let ttsHistory = [];                  // 최근 TTS 문장 히스토리
 const TTS_HISTORY_LIMIT = 5;          // 히스토리 최대 개수
 const ECHO_MIN_LEN = 6;               // 에코 판정 최소 길이
@@ -53,16 +60,36 @@ function isNameStageActive() {
 }
 function isLikelyName(text) {
   const t = (text || '').trim();
+
+  // 시스템 유도/업무 단어가 포함되면 이름 아님
+  const notNameTokens = [
+    '서비스','이동','입력','주세요','말씀','주민번호','앞여섯자리','확인','검색',
+    // 의료 도메인 키워드(이름과 혼동 방지)
+    '진료','확인서','증명서','처방','처방전','영수증','서류','발급','병원','약국'
+  ];
+  if (notNameTokens.some(w => t.includes(w))) return false;
+
   // 한글 2~6자 (공백X)
   if (/^[가-힣]{2,6}$/.test(t)) return true;
+
+  // "저는 {이름}(입니다/이에요/예요/이요)" / "{이름}입니다" / "{이름}이요"
+  if (/^저(는)?\s*[가-힣]{2,6}(입니다|이에요|예요|이요)?$/.test(t)) return true;
+  if (/^[가-힣]{2,6}\s*(입니다|이에요|예요|이요)$/.test(t)) return true;
+
   // 영문 짧은 이름(2~20자, 공백/하이픈 허용)
   if (/^[a-zA-Z][a-zA-Z\-\s]{1,18}[a-zA-Z]$/.test(t) && t.split(' ').join('').length <= 20) return true;
-  // 시스템 유도 단어 포함 시 이름 아님
-  const notNameTokens = ['서비스', '이동', '입력', '주세요', '말씀', '주민번호', '앞여섯자리', '확인', '검색'];
-  if (notNameTokens.some(w => t.includes(w))) return false;
-  // 길이 필터
-  if (t.length < 2 || t.length > 20) return false;
+
   return false;
+}
+function containsLikelyName(text) {
+  // 문장 안에 2~6자의 한글 이름 토큰이 있는지(도메인 단어 제외)
+  const raw = (text || '').trim();
+  const tokens = raw.split(/\s+/);
+  const deny = new Set(['진료','확인서','증명서','처방전','처방','영수증','서류','발급','약국','병원']);
+  for (const tok of tokens) {
+    if (/^[가-힣]{2,6}$/.test(tok) && !deny.has(tok)) return true;
+  }
+  return isLikelyName(raw);
 }
 function isLikelyEcho(transcript) {
   const t = normalize(transcript);
@@ -81,17 +108,8 @@ function isLikelyEcho(transcript) {
   }
   // 시스템 유도 문구가 들어오면 이름 단계가 아닐 때는 에코로 간주
   const systemWords = ['서비스', '이동', '입력', '말씀', '주세요', '주민번호', '앞여섯자리', '이름을'];
-  if (systemWords.some(w => transcript.includes(w)) && !isNameStageActive()) {
-    return true;
-  }
+  if (systemWords.some(w => transcript.includes(w)) && !isNameStageActive()) return true;
   return false;
-}
-
-// 확인 프롬프트 텍스트 감지
-function isConfirmPromptText(t) {
-  if (!t) return false;
-  const s = t.replace(/\s+/g, '');
-  return /님이맞으시면/.test(s) || s.includes('본인확인');
 }
 
 // '이서준 님이 맞으시면…' 형태의 TTS에서 이름 파싱
@@ -112,10 +130,10 @@ function isConfirmUtterance(text) {
   const norm = normalize(raw);
 
   // 1) 고정 구문
-  const confirmTokens = ['본인확인', '본인이야', '본인입니다', '저예요', '저에요', '접니다', '맞아요', '맞습니다', '맞다', '맞소', '네', '예'];
+  const confirmTokens = ['본인확인','본인이야','본인입니다','저예요','저에요','접니다','맞아요','맞습니다','맞다','맞소','네','예'];
   if (confirmTokens.some(tok => norm.includes(normalize(tok)))) return true;
 
-  // 2) 이름 + 확정 서술 (이요/이에요/예요/입니다/이다)
+  // 2) 대상 이름 + 확정 서술(있는 경우)
   if (confirmTargetName) {
     const name = confirmTargetName;
     const nameNorm = confirmTargetNameNorm || normalize(name);
@@ -157,7 +175,7 @@ function activateMicrophone() {
   console.log('✅ 마이크 활성화 진행');
   const micIndicator = document.getElementById('mic-indicator');
   if (micIndicator) micIndicator.classList.add('active');
-  setTimeout(startSpeechRecognition, 200);
+  setTimeout(startSpeechRecognition, 300);
 }
 
 function deactivateMicrophone() {
@@ -189,41 +207,44 @@ function startSpeechRecognition() {
   currentRecognition = new SpeechRecognition();
   currentRecognition.lang = 'ko-KR';
   currentRecognition.continuous = false;
-  currentRecognition.interimResults = false; // 명시
-  currentRecognition.maxAlternatives = 1;    // 명시
 
   currentRecognition.onresult = function (event) {
     const result = event.results[0][0].transcript.trim();
     console.log('🎤 인식된 텍스트:', result);
 
-    // 쿨다운/에코 차단 (단, 본인확인 문구는 예외 적용)
+    // 쿨다운/에코 차단 (단, 본인확인 문구/이름은 예외 적용)
     if (clientState !== 'confirming_user' && isWithinCooldown()) {
       console.warn('⏳ TTS 쿨다운 내 입력 무시:', result);
       return;
     }
 
     if (clientState === 'confirming_user') {
-      if (isConfirmUtterance(result)) {
-        console.log('✅ 본인확인 발화로 판단 → 서버 전송');
+      // ✅ 본인확인 단계: 확인 어구 or 대상 이름 or **임의의 그럴듯한 이름** → 즉시 서버 전송 + 즉시 stop
+      const pass =
+        isConfirmUtterance(result) ||
+        (confirmTargetName && normalize(result).includes(confirmTargetNameNorm)) ||
+        containsLikelyName(result);
+
+      if (pass) {
+        console.log('✅ 본인확인 통과 발화로 판단 → 서버 전송 & recognition.stop()');
         if (websocket && websocket.readyState === WebSocket.OPEN) {
           websocket.send(JSON.stringify({ type: 'stt.result', text: result }));
         }
+        try { currentRecognition.stop(); } catch (_) {}
+        currentRecognition = null;
         return;
       }
-      if (confirmTargetName && result.includes(confirmTargetName)) {
-        console.log('✅ 본인 이름 포함 발화 → 서버 전송');
-        if (websocket && websocket.readyState === WebSocket.OPEN) {
-          websocket.send(JSON.stringify({ type: 'stt.result', text: result }));
-        }
-        return;
-      }
+
+      // 그 외에도, 과도한 에코만 아니면 서버로 전달(서버에서 부적합 처리)
       if (!isLikelyEcho(result)) {
-        console.log('✅ 본인확인 단계 일반 발화 → 서버 전송');
+        console.log('➡️ 본인확인 단계 일반 발화 → 서버 전송(서버에서 판별)');
         if (websocket && websocket.readyState === WebSocket.OPEN) {
           websocket.send(JSON.stringify({ type: 'stt.result', text: result }));
         }
+        try { currentRecognition.stop(); } catch (_) {}
+        currentRecognition = null;
       } else {
-        console.warn('⛔ 본인확인 단계지만 에코로 판단 → 무시:', result);
+        console.warn('⛔ 본인확인 단계 에코로 판단 → 무시:', result);
       }
       return;
     }
@@ -247,9 +268,7 @@ function startSpeechRecognition() {
 
   currentRecognition.onerror = (event) => {
     console.error('❌ 음성 인식 오류:', event.error);
-    if ((event.error === 'no-speech' || event.error === 'aborted') && microphoneEnabled && !ttsPlaying) {
-      setTimeout(() => { if (!currentRecognition) startSpeechRecognition(); }, 300);
-    }
+    // 'no-speech'는 조용히 무시
   };
 
   currentRecognition.onend = () => {
@@ -304,9 +323,6 @@ function handleWebSocketMessage(data) {
 
   switch (data.type) {
     case 'tts.text': {
-      // 새로운 발화 시작 전에 기존 큐/합성기 정리 (겹침 방지)
-      stopTTS();
-
       // TTS 시작 전에 저장 + 히스토리 푸시 + 마이크 비활성화
       lastSpokenTTS = data.text || '';
       pushTTSHistory(lastSpokenTTS);
@@ -319,11 +335,12 @@ function handleWebSocketMessage(data) {
         console.log('🔎 본인확인 대상 이름 파싱:', confirmTargetName);
       }
 
-      // 확인 프롬프트면 쿨다운 단축
-      const isConfirmPrompt = isConfirmPromptText(lastSpokenTTS);
-      if (isConfirmPrompt) {
-        TTS_COOLDOWN_MS = 250;
-        console.log('⚙️ 확인 프롬프트 감지 → TTS_COOLDOWN_MS=250');
+      // 본인확인 안내 문구 감지 시 쿨다운을 짧게 (빠른 응답)
+      if (/님이\s*맞으시면.*본인\s*확인/.test(lastSpokenTTS)) {
+        TTS_COOLDOWN_MS = TTS_COOLDOWN_MS_CONFIRM;
+        console.log('⚙️ 확인 프롬프트 감지 → TTS_COOLDOWN_MS=', TTS_COOLDOWN_MS);
+      } else {
+        TTS_COOLDOWN_MS = TTS_COOLDOWN_MS_DEFAULT;
       }
 
       ttsPlaying = true;
@@ -343,7 +360,9 @@ function handleWebSocketMessage(data) {
           ttsPlaying = false;
           microphoneEnabled = true; // 강제 활성화
           lastTTSEndAt = Date.now();
-          const delay = (clientState === 'confirming_user') ? 250 : TTS_COOLDOWN_MS;
+          console.log('🔊 상태 업데이트 - ttsPlaying:', ttsPlaying, 'microphoneEnabled:', microphoneEnabled);
+
+          // 쿨다운 후 마이크 재활성화
           setTimeout(() => {
             console.log('🎤 마이크 재활성화 시도 - ttsPlaying:', ttsPlaying, 'microphoneEnabled:', microphoneEnabled);
             if (microphoneEnabled && !ttsPlaying) {
@@ -351,7 +370,7 @@ function handleWebSocketMessage(data) {
             } else {
               console.warn('🚫 마이크 재활성화 실패 - microphoneEnabled:', microphoneEnabled, 'ttsPlaying:', ttsPlaying);
             }
-          }, delay);
+          }, TTS_COOLDOWN_MS);
         }
       );
       break;
@@ -366,6 +385,7 @@ function handleWebSocketMessage(data) {
     case 'mic.on':
       console.log('🎤 마이크 재활성화 신호 수신');
       microphoneEnabled = true;
+      console.log('🎤 mic.on 받음 - microphoneEnabled:', microphoneEnabled, 'ttsPlaying:', ttsPlaying);
       if (!ttsPlaying) {
         setTimeout(() => {
           console.log('🎤 mic.on 딜레이 후 활성화 시도');
@@ -380,16 +400,16 @@ function handleWebSocketMessage(data) {
       clientState = data.step;
       console.log('📝 상태 업데이트:', clientState);
       if (clientState === 'confirming_user') {
-        updateStatus('음성으로 답변해주세요. (예: "본인 확인", "저 예요", "이서준이요")');
-        TTS_COOLDOWN_MS = 250;
-        if (!ttsPlaying) {
-          console.log('🎤 확인 단계 진입 → 즉시 마이크 활성화');
-          activateMicrophone();
-        }
+        updateStatus('음성으로 답변해주세요. (예: "본인 확인", "저 예요", "이름 말하기")');
+        // 확인 단계 진입 시 빠른 응답 모드 유지
+        TTS_COOLDOWN_MS = TTS_COOLDOWN_MS_CONFIRM;
+      } else {
+        TTS_COOLDOWN_MS = TTS_COOLDOWN_MS_DEFAULT;
       }
       break;
 
     case 'stt.forward_to_input': {
+      // 서버 지시에도 로컬에서 2차 필터(에코/이름형태) 후 반영
       const text = (data.text || '').trim();
       const nameSearchSection = document.getElementById('nameSearchSection');
       if (nameSearchSection && window.getComputedStyle(nameSearchSection).display !== 'none') {
@@ -428,14 +448,19 @@ function handleWebSocketMessage(data) {
       break;
 
     case 'tts.complete':
+      // 서버 신호 수신 시에도 동일 처리
       console.log('📨 TTS 완료 신호 수신 - 서버에서 온 신호');
       ttsPlaying = false;
       microphoneEnabled = true;
       lastTTSEndAt = Date.now();
-      setTimeout(() => {
-        console.log('📨 서버 tts.complete 딜레이 후 마이크 활성화 시도');
-        activateMicrophone();
-      }, TTS_COOLDOWN_MS);
+      // 상태에 따라 쿨다운 조정
+      TTS_COOLDOWN_MS = (clientState === 'confirming_user') ? TTS_COOLDOWN_MS_CONFIRM : TTS_COOLDOWN_MS_DEFAULT;
+      if (microphoneEnabled) {
+        setTimeout(() => {
+          console.log('📨 서버 tts.complete 딜레이 후 마이크 활성화 시도');
+          activateMicrophone();
+        }, TTS_COOLDOWN_MS);
+      }
       break;
 
     default:
@@ -536,6 +561,7 @@ function setupAuthEventListeners() {
       const name = nameInput?.value?.trim();
       if (!name) return;
 
+      // 이름 단계에서도 기본 유효성 체크
       if (!isLikelyName(name)) {
         updateStatus('이름 형식이 올바르지 않습니다. (한글 2~6자 권장)');
         return;
@@ -561,6 +587,7 @@ function setupAuthEventListeners() {
             }
           } else {
             updateStatus('❌ 이름 검색 실패: ' + data.message);
+            // 검색 실패 시에도 TTS로 안내
             speakOnClient(
               data.message,
               () => {
@@ -637,7 +664,7 @@ window.forceActivateMic = function () {
   console.log('🚨 강제 마이크 활성화');
   microphoneEnabled = true;
   ttsPlaying = false;
-  lastTTSEndAt = Date.now() - TTS_COOLDOWN_MS; // 바로 활성화 허용
+  lastTTSEndAt = Date.now() - TTS_COOLDOWN_MS_DEFAULT; // 바로 활성화 허용
   activateMicrophone();
 };
 
@@ -650,7 +677,8 @@ window.showMicStatus = function () {
     cooldownRemainingMs: Math.max(0, TTS_COOLDOWN_MS - (Date.now() - lastTTSEndAt)),
     ttsHistory,
     clientState,
-    confirmTargetName
+    confirmTargetName,
+    TTS_COOLDOWN_MS
   });
 };
 
@@ -672,6 +700,7 @@ document.addEventListener('DOMContentLoaded', function () {
     ttsHistory = [];
     confirmTargetName = null;
     confirmTargetNameNorm = null;
+    TTS_COOLDOWN_MS = TTS_COOLDOWN_MS_DEFAULT;
     console.log('📊 초기 상태 설정 - microphoneEnabled:', microphoneEnabled, 'ttsPlaying:', ttsPlaying);
 
     updateStatus('음성 서비스 로딩 중...');

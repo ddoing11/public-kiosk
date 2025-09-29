@@ -1,10 +1,10 @@
 // static/js/modules/azure-tts.js
 /**
- * Azure Text-to-Speech 모듈 (큐 + 문장분절 + 중복차단 + 최소간격)
+ * Azure Text-to-Speech 모듈 (큐 + 문장분절 + 중복차단 + 간격 강화)
  * - 한 번의 호출로 여러 문장을 순서대로 모두 재생
  * - 그룹(한 번의 speakOnClient 호출) 내에서는 중복 스킵하지 않음
  * - 그룹의 마지막 문장 완료 시에만 서버로 tts.complete 전송
- * - 연속 발화 최소 간격 보장
+ * - 연속 발화 최소 간격/문장 간 간격/그룹 테일 간격 보장 (겹침 방지 강화)
  * - 과도한 큐 길이 시 오래된 항목 정리
  */
 
@@ -17,9 +17,11 @@ let currentSynth = null;           // 현재 사용 중인 Synthesizer (stop용)
 let lastTtsText = "";              // 마지막으로 말한 문장(개별 문장 기준)
 let lastTtsAt = 0;                 // 마지막 발화 완료 시각(ms)
 
-// 파라미터
-const MAX_QUEUE = 10;              // 큐 최대 길이
-const MIN_GAP_MS = 1200;           // 연속 발화 최소 간격(ms) (기존 900 → 1200으로 상향)
+// 파라미터 (겹침 느낌 줄이기 위해 간격 상향)
+const MAX_QUEUE = 10;                  // 큐 최대 길이
+const MIN_GAP_MS = 1600;              // 연속 발화 최소 간격(ms) (기존 1200 → 1600)
+const INTER_SENTENCE_DELAY_MS = 1400; // 한 그룹 내 문장 간 간격 (기존 1100 → 1400)
+const GROUP_TAIL_DELAY_MS = 250;      // 그룹 마지막 문장 후 살짝 쉬고 complete 전송
 
 // --------------------------- 유틸 ---------------------------
 
@@ -127,11 +129,7 @@ async function playOnce(text) {
 
     const cleanup = () => {
       if (synthesizer) {
-        try {
-          synthesizer.close();
-        } catch (e) {
-          console.warn("Synthesizer close 오류:", e);
-        }
+        try { synthesizer.close(); } catch (e) { console.warn("Synthesizer close 오류:", e); }
       }
       if (currentSynth === synthesizer) currentSynth = null;
     };
@@ -187,7 +185,7 @@ async function processQueue() {
       const item = ttsQueue.shift();
       if (!item || !item.text) continue;
 
-      // 연속 발화 최소 간격 보장
+      // 연속 발화 최소 간격 보장 (이전 발화와 충분한 텀)
       const gap = now() - lastTtsAt;
       if (gap < MIN_GAP_MS) {
         await new Promise((r) => setTimeout(r, MIN_GAP_MS - gap));
@@ -198,6 +196,8 @@ async function processQueue() {
         console.log("⏭️ 유사/중복 발화 건너뜀:", item.text);
         try { item.onStart && item.onStart(); } catch (e) {}
         if (item.isGroupLast) {
+          // 그룹 마지막 문장이 중복으로 스킵되더라도 complete 보장
+          await new Promise((r) => setTimeout(r, GROUP_TAIL_DELAY_MS));
           try { item.onEnd && item.onEnd(); } catch (e) {}
           sendTTSCompleteSignal();
         }
@@ -206,28 +206,21 @@ async function processQueue() {
       }
 
       // onStart(마이크 오프 등) — 그룹의 첫 문장에서 한 번만 호출
-      try {
-        item.onStart && item.onStart();
-      } catch (e) {
-        console.error("onStart 콜백 오류:", e);
-      }
+      try { item.onStart && item.onStart(); } catch (e) { console.error("onStart 콜백 오류:", e); }
 
       try {
         await playOnce(item.text);
       } catch (e) {
         console.error("Azure TTS 처리 중 오류 발생:", e);
       } finally {
-        // 문장 간 짧은 딜레이(에코 방지) — 살짝 늘림
-        await new Promise((r) => setTimeout(r, 1100)); // 기존 800 → 1100
+        // 문장 간 짧은 딜레이(에코/겹침 방지) — 상향
+        await new Promise((r) => setTimeout(r, INTER_SENTENCE_DELAY_MS));
 
-        // 그룹의 마지막 문장에서만 tts.complete + onEnd 호출
+        // 그룹의 마지막 문장에서만 tts.complete + onEnd 호출 (테일 딜레이 포함)
         if (item.isGroupLast) {
+          await new Promise((r) => setTimeout(r, GROUP_TAIL_DELAY_MS));
           sendTTSCompleteSignal();
-          try {
-            item.onEnd && item.onEnd();
-          } catch (e) {
-            console.error("onEnd 콜백 오류:", e);
-          }
+          try { item.onEnd && item.onEnd(); } catch (e) { console.error("onEnd 콜백 오류:", e); }
         }
 
         lastTtsText = item.text;
@@ -272,8 +265,8 @@ export function speakOnClient(text, onStart, onEnd) {
     sentences.forEach((s, idx) => {
       ttsQueue.push({
         text: s,
-        onStart: idx === 0 ? onStart : null,    // 그룹 시작에서만 onStart
-        onEnd:  idx === sentences.length - 1 ? onEnd : null, // 그룹 끝에서만 onEnd
+        onStart: idx === 0 ? onStart : null,                       // 그룹 시작에서만 onStart
+        onEnd:  idx === sentences.length - 1 ? onEnd : null,       // 그룹 끝에서만 onEnd
         groupId: gid,
         isGroupFirst: idx === 0,
         isGroupLast: idx === sentences.length - 1,

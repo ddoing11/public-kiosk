@@ -45,7 +45,7 @@
                 
                 <form id="birthForm" method="POST" action="/kiosk/main/">
                     {% csrf_token %}
-                    <p>주민번호 앞 6자리를 입력해주세요</p>
+                    <p>주민번호 전체를 입력해주세요</p>
                     <div class="birth-input">
                         <input type="text" name="birth_digit_1" class="birth-digit" maxlength="1" pattern="[0-9]" data-index="0">
                         <input type="text" name="birth_digit_2" class="birth-digit" maxlength="1" pattern="[0-9]" data-index="1">
@@ -53,6 +53,14 @@
                         <input type="text" name="birth_digit_4" class="birth-digit" maxlength="1" pattern="[0-9]" data-index="3">
                         <input type="text" name="birth_digit_5" class="birth-digit" maxlength="1" pattern="[0-9]" data-index="4">
                         <input type="text" name="birth_digit_6" class="birth-digit" maxlength="1" pattern="[0-9]" data-index="5">
+                        <p>-</p>
+                        <input type="text" name="birth_digit_7" class="birth-digit" maxlength="1" pattern="[0-9]" data-index="0">
+                        <input type="text" name="birth_digit_8" class="birth-digit" maxlength="1" pattern="[0-9]" data-index="1">
+                        <input type="text" name="birth_digit_9" class="birth-digit" maxlength="1" pattern="[0-9]" data-index="2">
+                        <input type="text" name="birth_digit_10" class="birth-digit" maxlength="1" pattern="[0-9]" data-index="3">
+                        <input type="text" name="birth_digit_11" class="birth-digit" maxlength="1" pattern="[0-9]" data-index="4">
+                        <input type="text" name="birth_digit_12" class="birth-digit" maxlength="1" pattern="[0-9]" data-index="5">
+                        <input type="text" name="birth_digit_13" class="birth-digit" maxlength="1" pattern="[0-9]" data-index="6">
                     </div>
                     <button type="submit" id="birthSubmitBtn" class="verify-button" disabled>1차 검색</button>
                 </form>

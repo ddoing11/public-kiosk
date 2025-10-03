@@ -81,7 +81,8 @@ def main(request):
     if request.method == 'POST':
         birth_number = request.POST.get('birth_number', '')
         if len(birth_number) == 13 and birth_number.isdigit():
-            # auth_system/views.py의 get_patients_by_birth_number 로직을 가져옴
+            #받아온 13자리수를 주민번호 규격에 맞게 재구성, 그 후 patients를 검색
+            birth_number = f"{birth_number[:6]}-{birth_number[6:]}"
             patients = PatientList.objects.filter(patient_id__startswith=birth_number)
 
             # 검색 결과를 세션에 저장하기 위해 직렬화

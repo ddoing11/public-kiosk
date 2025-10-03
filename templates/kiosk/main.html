@@ -1,0 +1,81 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>병원 서류 출력 키오스크 - 메인</title>
+    <style>
+        body { font-family: Arial, sans-serif; margin: 0; padding: 20px; background-color: #f8f9fa; }
+        .container { max-width: 900px; margin: 0 auto; background: white; padding: 40px; border-radius: 15px; box-shadow: 0 4px 20px rgba(0,0,0,0.1); }
+        .header { text-align: center; margin-bottom: 40px; padding-bottom: 20px; border-bottom: 2px solid #e9ecef; }
+        .header h1 { color: #2c3e50; margin-bottom: 10px; }
+        .options-container { display: grid; grid-template-columns: 1fr; gap: 30px; margin-bottom: 30px; }
+        .option-card { background: #f8f9fa; padding: 30px; border-radius: 10px; border: 2px solid #dee2e6; text-align: center; }
+        .option-card h3 { margin-top: 0; margin-bottom: 20px; color: #495057; }
+        .birth-input { display: flex; gap: 10px; justify-content: center; margin-bottom: 20px; }
+        .birth-digit { width: 50px; height: 60px; text-align: center; font-size: 2rem; border: 2px solid #ddd; border-radius: 8px; }
+        .name-input { width: calc(100% - 40px); padding: 15px; font-size: 1.2rem; border: 2px solid #ddd; border-radius: 8px; margin: 15px 0; }
+        .verify-button { padding: 15px 30px; font-size: 1.1rem; background-color: #28a745; color: white; border: none; border-radius: 8px; cursor: pointer; font-weight: bold; }
+        .verify-button:disabled { background-color: #ccc; cursor: not-allowed; }
+        .results-section { background: #f0f4f8; padding: 20px; border-radius: 10px; }
+        .result-item { background: white; border: 1px solid #ddd; border-radius: 8px; padding: 15px; margin-bottom: 10px; }
+        .result-item button { margin-top: 10px; background-color: #007bff; }
+        .mic-indicator { width: 60px; height: 60px; border-radius: 50%; background-color: #dc3545; display: flex; align-items: center; justify-content: center; margin: 10px auto 20px auto; color: white; font-size: 24px; }
+        .mic-indicator.active { background-color: #28a745; animation: pulse 1.5s infinite; }
+        @keyframes pulse { 0% { transform: scale(1); } 50% { transform: scale(1.1); } 100% { transform: scale(1); } }
+        .status-bar { background: #e9ecef; padding: 15px; border-radius: 8px; margin-top: 30px; text-align: center; font-weight: bold; }
+        .back-button { position: absolute; top: 20px; left: 20px; padding: 10px 20px; background-color: #6c757d; color: white; border: none; border-radius: 5px; cursor: pointer; }
+    </style>
+</head>
+<body>
+    <div id="audio-unlock-overlay"></div>
+    <button class="back-button" onclick="window.location.href='/kiosk/idle/'">← 처음으로</button>
+    
+    <div class="container">
+        <div class="header">
+            <h1>🏥 병원 서류 출력 서비스</h1>
+            <p>먼저 본인 확인을 진행해주세요</p>
+        </div>
+        
+        <div class="options-container">
+            <div class="option-card id-input-section">
+                <h3>📝 주민번호로 신원확인</h3>
+                
+                <div id="mic-indicator" class="mic-indicator">🎤</div>
+                
+                <form id="birthForm" method="POST" action="/kiosk/main/">
+                    {% csrf_token %}
+                    <p>주민번호 앞 6자리를 입력해주세요</p>
+                    <div class="birth-input">
+                        <input type="text" name="birth_digit_1" class="birth-digit" maxlength="1" pattern="[0-9]" data-index="0">
+                        <input type="text" name="birth_digit_2" class="birth-digit" maxlength="1" pattern="[0-9]" data-index="1">
+                        <input type="text" name="birth_digit_3" class="birth-digit" maxlength="1" pattern="[0-9]" data-index="2">
+                        <input type="text" name="birth_digit_4" class="birth-digit" maxlength="1" pattern="[0-9]" data-index="3">
+                        <input type="text" name="birth_digit_5" class="birth-digit" maxlength="1" pattern="[0-9]" data-index="4">
+                        <input type="text" name="birth_digit_6" class="birth-digit" maxlength="1" pattern="[0-9]" data-index="5">
+                    </div>
+                    <button type="submit" id="birthSubmitBtn" class="verify-button" disabled>1차 검색</button>
+                </form>
+
+                <div class="name-search-section" id="nameSearchSection" style="display: none;">
+                    <p id="birthSuccessMessage" style="color: green; font-weight: bold;"></p>
+                    <label for="nameInput">이름을 입력해주세요 (음성으로도 가능)</label>
+                    <input type="text" id="nameInput" class="name-input" placeholder="환자 이름을 입력하세요">
+                    <button type="button" id="nameSearchBtn" class="verify-button">최종 검색</button>
+                </div>
+            </div>
+        </div>
+
+        <div class="results-section" id="resultsSection" style="display:none; margin-top: 20px;">
+            <h3>🏥 검색 결과</h3>
+            <div id="resultsList"></div>
+        </div>
+        
+        <div class="status-bar" id="status-bar">
+            시스템 준비 완료 - 본인 확인을 진행해주세요
+        </div>
+    </div>
+
+    <script type="module" src="/static/js/voice_socket_main.js"></script>
+</body>
+</html>

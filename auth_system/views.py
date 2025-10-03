@@ -10,22 +10,23 @@ from .models import PatientList
 #테스트 페이지 접근 용
 def test_page_view(request):
     if request.method == 'POST':
-        # 주민번호 앞자리 6자리를 받아서 1차 필터링 수행
+        # 주민번호 앞자리 13자리를 받아서 1차 필터링 수행
         birth_number = request.POST.get('birth_number', '')
-        if len(birth_number) == 6 and birth_number.isdigit():
-            # PatientList에서 patient_id가 입력받은 앞자리로 시작하는 환자들 검색
-            filtered_results = get_patients_by_birth_number(birth_number)
-            request.session['filtered_patients'] = filtered_results
-            request.session['birth_number'] = birth_number
-
-            return JsonResponse({
-                'success': True,
-                'message': f'{len(filtered_results)}명의 환자가 검색되었습니다.',
-                'patient_count': len(filtered_results)
-            })
-        else:
-            return JsonResponse({'success': False, 'message': '올바른 6자리 숫자를 입력해주세요.'})
-
+        if len(birth_number) == 13 and birth_number.isdigit():
+            birth_number = f"{birth_number[:6]}-{birth_number[6:]}"
+        else: #이 부분은 없애도 괜찮을지도
+            return JsonResponse({'success': False, 'message': '올바른 13자리 숫자를 입력해주세요.'})
+        if not len(birth_number) != 14:
+            return JsonResponse({'success': False, 'message': '올바른 주민번호를 입력해주세요.'})
+        # PatientList에서 patient_id가 동일한 환자를 검색
+        filtered_results = get_patients_by_birth_number(birth_number)
+        request.session['filtered_patients'] = filtered_results
+        request.session['birth_number'] = birth_number
+        return JsonResponse({
+            'success': True,
+             'message': f'{len(filtered_results)}명의 환자가 검색되었습니다.',
+             'patient_count': len(filtered_results)
+        })
     return render(request, 'test_page.html')
 
 def get_patients_by_birth_number(birth_number):

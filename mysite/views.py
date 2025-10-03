@@ -15,10 +15,6 @@ def idle(request):
     """대기화면 템플릿 반환 (터치만)"""
     return render(request, 'kiosk/idle.html')
 
-def main(request):
-    """메인화면 템플릿 반환 (주민번호 입력 + 상담)"""
-    return render(request, 'kiosk/main.html')
-
 @csrf_exempt
 def id_verify(request):
     """주민번호 앞 6자리 검증 API"""
@@ -84,10 +80,10 @@ def main(request):
     """메인화면 + 주민번호 1차 검색 처리"""
     if request.method == 'POST':
         birth_number = request.POST.get('birth_number', '')
-        if len(birth_number) == 6 and birth_number.isdigit():
+        if len(birth_number) == 13 and birth_number.isdigit():
             # auth_system/views.py의 get_patients_by_birth_number 로직을 가져옴
             patients = PatientList.objects.filter(patient_id__startswith=birth_number)
-            
+
             # 검색 결과를 세션에 저장하기 위해 직렬화
             filtered_results = [
                 {
@@ -104,7 +100,7 @@ def main(request):
             })
         else:
             return JsonResponse({'success': False, 'message': '올바른 6자리 숫자를 입력해주세요.'})
-            
+
     return render(request, 'kiosk/main.html')
 
 # ===== 선택된 환자 정보를 세션에 저장하는 함수 =====
@@ -146,9 +142,9 @@ def search_by_name_view(request):
         
         # 이름으로 2차 필터링
         final_results = [p for p in filtered_patients if name in p['patient_name']]
-        
+
         final_results = [p for p in filtered_patients if name in p['patient_name']]
-        
+
         # [수정된 부분 시작]
         if len(final_results) == 1:
             # 결과가 한 명이면, 환자 정보를 응답에 직접 담아서 보냄

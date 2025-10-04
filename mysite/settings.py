@@ -85,11 +85,11 @@ ASGI_APPLICATION = 'mysite.asgi.application'  # WebSocket 지원
 DATABASES = {
     'default': {
         'ENGINE': 'django.db.backends.mysql',
-        'NAME': os.environ.get('DOCUMENT_DB_NAME', 'grihKioskPrj'),
-        'USER': os.environ.get('DOCUMENT_DB_USER', 'grih'),
-        'PASSWORD': os.environ.get('DOCUMENT_DB_PASSWORD', 'qorhvms4dlsqkd'),
-        'HOST': os.environ.get('DOCUMENT_DB_HOST', 'its.iptime.org'),
-        'PORT': os.environ.get('DOCUMENT_DB_PORT', '61426'),
+        'NAME': os.environ.get('DOCUMENT_DB_NAME'),
+        'USER': os.environ.get('DOCUMENT_DB_USER'),
+        'PASSWORD': os.environ.get('DOCUMENT_DB_PASSWORD'),
+        'HOST': os.environ.get('DOCUMENT_DB_HOST'),
+        'PORT': os.environ.get('DOCUMENT_DB_PORT'),
         'OPTIONS': {
             'charset': 'utf8mb4',       
         },

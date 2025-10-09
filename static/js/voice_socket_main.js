@@ -20,8 +20,8 @@ let ttsPlaying = false;        // TTS 재생 상태
 
 // 에코/쿨다운 방지용
 let lastTTSEndAt = 0;                 // 마지막 TTS 종료 시각(ms)
-let TTS_COOLDOWN_MS = 1400;           // 기본 쿨다운
-const TTS_COOLDOWN_MS_DEFAULT = 1400; // 복구용
+let TTS_COOLDOWN_MS = 400;           // 기본 쿨다운
+const TTS_COOLDOWN_MS_DEFAULT = 400; // 복구용
 const TTS_COOLDOWN_MS_CONFIRM = 250;  // 본인확인 프롬프트 직후 빠른 응답 허용
 let ttsHistory = [];                  // 최근 TTS 문장 히스토리
 const TTS_HISTORY_LIMIT = 5;          // 히스토리 최대 개수
@@ -175,7 +175,7 @@ function activateMicrophone() {
   console.log('✅ 마이크 활성화 진행');
   const micIndicator = document.getElementById('mic-indicator');
   if (micIndicator) micIndicator.classList.add('active');
-  setTimeout(startSpeechRecognition, 300);
+  startSpeechRecognition();
 }
 
 function deactivateMicrophone() {
@@ -362,15 +362,11 @@ function handleWebSocketMessage(data) {
           lastTTSEndAt = Date.now();
           console.log('🔊 상태 업데이트 - ttsPlaying:', ttsPlaying, 'microphoneEnabled:', microphoneEnabled);
 
-          // 쿨다운 후 마이크 재활성화
-          setTimeout(() => {
-            console.log('🎤 마이크 재활성화 시도 - ttsPlaying:', ttsPlaying, 'microphoneEnabled:', microphoneEnabled);
-            if (microphoneEnabled && !ttsPlaying) {
-              activateMicrophone();
-            } else {
-              console.warn('🚫 마이크 재활성화 실패 - microphoneEnabled:', microphoneEnabled, 'ttsPlaying:', ttsPlaying);
-            }
-          }, TTS_COOLDOWN_MS);
+          if (microphoneEnabled && !ttsPlaying) {
+            activateMicrophone();
+          } else {
+            console.warn('🚫 마이크 재활성화 실패 - 상태 불일치');
+          }
         }
       );
       break;
@@ -453,13 +449,9 @@ function handleWebSocketMessage(data) {
       ttsPlaying = false;
       microphoneEnabled = true;
       lastTTSEndAt = Date.now();
-      // 상태에 따라 쿨다운 조정
-      TTS_COOLDOWN_MS = (clientState === 'confirming_user') ? TTS_COOLDOWN_MS_CONFIRM : TTS_COOLDOWN_MS_DEFAULT;
-      if (microphoneEnabled) {
-        setTimeout(() => {
-          console.log('📨 서버 tts.complete 딜레이 후 마이크 활성화 시도');
-          activateMicrophone();
-        }, TTS_COOLDOWN_MS);
+      TTS_COOLDOWN_MS = (clientState === 'confirming_user') ? 150 : TTS_COOLDOWN_MS_DEFAULT; // ★수정
+      if (microphoneEnabled && !ttsPlaying) {
+        activateMicrophone(); // ★수정: 즉시 재활성화
       }
       break;
 

@@ -39,6 +39,7 @@ KIOSK_SYSTEM_PROMPT = """
 
 [응답 원칙]
 - 한글, 1~2문장으로 간결하게.
+- 핵심만 안내하고 불필요한 설명은 생략.
 - 제출처/용도에 맞게 추천.
 - 모르면 "모릅니다" 대신, 간단한 추가 질문 1문장 제안.
 - 키오스크에서 바로 발급 가능함을 자연스럽게 덧붙임.
@@ -247,12 +248,12 @@ class ServiceWebSocketConsumer(AsyncWebsocketConsumer):
         current_step = self.client_state.get("step")
         now = asyncio.get_event_loop().time()
 
-        # TTS 직후 쿨다운
-        if (now - self.tts_completed_time) < self.voice_delay:
-            self.logger.info(f"TTS 완료 후 {self.voice_delay}초 이내 입력 무시: '{text}'")
-            return
+        # ✅ TTS 직후 쿨다운 제거 (바로 입력 가능)
+        # if (now - self.tts_completed_time) < self.voice_delay:
+        #     self.logger.info(f"TTS 완료 후 {self.voice_delay}초 이내 입력 무시: '{text}'")
+        #     return
 
-        # TTS와 유사한 자기 에코 무시
+        # ✅ 단, TTS 직후 에코로 동일 문장 반복될 경우만 방지
         if self.recent_tts_content:
             tts_keywords = set(self.recent_tts_content.split())
             input_keywords = set((text or "").split())
@@ -264,14 +265,45 @@ class ServiceWebSocketConsumer(AsyncWebsocketConsumer):
         self.recognition_failure_count = 0
 
         try:
+            # ✅ 발급 의사 확인 단계
             if current_step == "waiting_for_issue_confirmation":
                 await self.handle_issue_confirmation(text)
                 return
 
+            # ✅ 날짜 선택 단계
             if current_step == "date_selection":
-                await self.handle_date_selection_input(text)
+                self.logger.info(f"📅 날짜 선택 입력 감지: '{text}' → 직접 프린터 처리로 이동")
+
+                try:
+                    from .printer_handler import PrinterHandler  
+                    printer = PrinterHandler()
+
+                    doc_type = self.client_state.get("pending_document_type", "진료영수증")
+
+                    # ✅ prepare_print_job이 성공/실패 반환하도록
+                    success = await printer.prepare_print_job(self, doc_type, text)
+
+                    if success:
+                        await self.send_tts_with_tracking(
+                            f"{text}의 {doc_type} 발급이 완료되었습니다. 다른 서류가 필요하신가요?"
+                        )
+                        self.client_state["step"] = "await_additional_issue"
+                    else:
+                        await self.send_tts_with_tracking(
+                            f"{text}의 {doc_type} 발급 중 오류가 발생했습니다. 다시 시도해주세요."
+                        )
+
+                except Exception as e:
+                    self.logger.error(f"❌ 날짜 선택 처리 중 오류: {e}")
+                    await self.send_tts_with_tracking("발급 중 오류가 발생했습니다. 다시 시도해주세요.")
+
                 return
 
+
+
+
+
+            # 나머지 단계만 GPT 분석 수행
             analysis = await self.analyze_input_with_context(text)
             self.logger.info(f"분석 결과: {analysis}")
             await self.handle_analysis_result(analysis, text)
@@ -446,13 +478,13 @@ class ServiceWebSocketConsumer(AsyncWebsocketConsumer):
         self.logger.info(f"발급 의사 확인 응답(규칙 매칭): '{text}'")
         t = (text or "").replace(" ", "")
 
-        issue_synonyms = ["발급", "출력", "진행", "해줘", "해주세요", "바로해", "진행해", "출력해"]
+        issue_synonyms = ["발급", "출력", "진행", "해줘", "해주세요", "바로해", "진행해", "출력해", "8급", "팔급"]
         if any(s in t for s in issue_synonyms):
             self.logger.info("발급 의사 확정 → 날짜 선택")
             self.client_state["step"] = "date_selection"
             await self.send_message("voice.mode", {"allow_short_input": True})
             await self.send_tts_with_tracking(
-                "날짜를 선택해주세요. 원하는 날짜를 말씀하시거나 '취소'라고 말씀해주세요."
+                "원하는 날짜를 말씀하시거나 '취소'라고 말씀해주세요."
             )
             return
 
@@ -708,7 +740,7 @@ JSON만: {{"document_type": "진료확인서|처방전|진료영수증|기타", 
 
     async def generate_confirmation_message(self, doc_type: str, count: int, submit_to: str | None) -> str:
         prefix = f"{submit_to} 제출용 " if submit_to and submit_to not in ("기타", "null") else ""
-        return f"{prefix}{doc_type} {count}건을 찾았습니다. 키오스크에서 발급하시겠습니까? '발급' 또는 '취소'라고 말씀해주세요."
+        return f"{prefix}{doc_type} {count}건을 찾았습니다. 발급을 원하시면 '발급' 취소하시려면 '취소'라고 말씀해주세요."
 
     # ------------- ORM 접근 -------------
     @database_sync_to_async

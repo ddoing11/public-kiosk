@@ -340,7 +340,7 @@ function handleMessage(data) {
               console.log('🎤 TTS 완료 후 마이크 자동 활성화');
               activateMic();
             }
-          }, 500);
+          }, 300);
         }
       );
       break;

@@ -9,6 +9,9 @@
 import json
 import asyncio
 import logging
+
+from .consumers import print_document
+
 from datetime import date, datetime
 
 from channels.generic.websocket import AsyncWebsocketConsumer
@@ -271,35 +274,22 @@ class ServiceWebSocketConsumer(AsyncWebsocketConsumer):
                 return
 
             # ✅ 날짜 선택 단계
-            if current_step == "date_selection":
-                self.logger.info(f"📅 날짜 선택 입력 감지: '{text}' → 직접 프린터 처리로 이동")
+            if current_step == 'date_selection':
+                logger.info(f"📅 날짜 선택 입력 감지: '{text}' → 직접 프린터 처리로 이동")
 
-                try:
-                    from .printer_handler import PrinterHandler  
-                    printer = PrinterHandler()
+                # 변환된 날짜로 실제 출력 요청
+                success = print_document(
+                    self.selected_patient.get("patient_id"),
+                    self.client_state.get("selected_doc_type"),
+                    text
+                )
 
-                    doc_type = self.client_state.get("pending_document_type", "진료영수증")
-
-                    # ✅ prepare_print_job이 성공/실패 반환하도록
-                    success = await printer.prepare_print_job(self, doc_type, text)
-
-                    if success:
-                        await self.send_tts_with_tracking(
-                            f"{text}의 {doc_type} 발급이 완료되었습니다. 다른 서류가 필요하신가요?"
-                        )
-                        self.client_state["step"] = "await_additional_issue"
-                    else:
-                        await self.send_tts_with_tracking(
-                            f"{text}의 {doc_type} 발급 중 오류가 발생했습니다. 다시 시도해주세요."
-                        )
-
-                except Exception as e:
-                    self.logger.error(f"❌ 날짜 선택 처리 중 오류: {e}")
-                    await self.send_tts_with_tracking("발급 중 오류가 발생했습니다. 다시 시도해주세요.")
-
+                if success:
+                    await self.send_message('tts.text', {'text': f"{text}의 {self.client_state.get('selected_doc_type')}을 출력합니다."})
+                    await self.send_message('tts.text', {'text': '출력이 완료되었습니다.'})
+                else:
+                    await self.send_message('tts.text', {'text': f"{text}의 {self.client_state.get('selected_doc_type')} 문서를 찾을 수 없습니다. 다시 시도해주세요."})
                 return
-
-
 
 
 
@@ -459,6 +449,7 @@ class ServiceWebSocketConsumer(AsyncWebsocketConsumer):
                 return
 
             self.logger.info(f"서류 직접 요청으로 처리: {doc_type} (제출처: {submit_to})")
+            self.client_state["selected_doc_type"] = doc_type
             await self.send_message("document.recognized", {"document_type": doc_type})
             await self.query_database(doc_type, submit_to)
             return

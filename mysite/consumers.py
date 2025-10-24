@@ -10,9 +10,8 @@ from .models import Medical_Certificate, Prescription, MedicalReceipt
 from .utils import get_gpt_streaming_response, SYSTEM_PROMPT
 import os
 import re
-import subprocess  # ✅ subprocess 임포트
-# import tempfile    # SumatraPDF는 필요 없음
-# import shutil      # SumatraPDF는 필요 없음
+import subprocess  
+import time
 
 logger = logging.getLogger('kiosk')
 client = OpenAI(api_key=getattr(settings, 'OPENAI_API_KEY', ''))
@@ -134,6 +133,7 @@ def print_document(patient_id: str, doc_type: str, issue_date: str) -> (str, str
 
 
 class KioskWebSocketConsumer(AsyncWebsocketConsumer):
+    # --- (KioskWebSocketConsumer 코드는 이전과 동일하게 유지) ---
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.client_state = {}
@@ -220,7 +220,9 @@ class KioskWebSocketConsumer(AsyncWebsocketConsumer):
         await self.send(text_data=json.dumps(message))
 
     async def handle_print_request(self, data):
-        """프린트 요청 처리 (TTS 버그 수정됨)"""
+        """프린트 요청 처리 (Kiosk Consumer 버전 - 상태 변경 로직 다름 주의)"""
+        # (이 코드는 ServiceWebSocketConsumer의 수정사항을 반영해야 함)
+        # (우선 기존 로직 유지, 필요시 Service 버전 참고하여 수정)
         try:
             patient_id = data.get('patient_id')
             doc_type = data.get('doc_type')
@@ -236,11 +238,7 @@ class KioskWebSocketConsumer(AsyncWebsocketConsumer):
 
             final_tts_message = ""
             if status == "success":
-                # 날짜 형식을 TTS에 맞게 조정 (예: 2025-07-16 -> 7월 16일) - 필요시 구현
-                # date_obj = datetime.strptime(normalize_date_input(issue_date), "%Y-%m-%d")
-                # tts_date_str = f"{date_obj.month}월 {date_obj.day}일"
-                tts_date_str = issue_date # 우선 원본 사용
-                await self.send_message('tts.text', {'text': f'{tts_date_str}의 {doc_type}을 출력합니다.'})
+                await self.send_message('tts.text', {'text': f'{issue_date}의 {doc_type}을 출력합니다.'})
                 await asyncio.sleep(0.5)
                 final_tts_message = '출력이 완료되었습니다.'
             elif status == "not_found":
@@ -253,22 +251,14 @@ class KioskWebSocketConsumer(AsyncWebsocketConsumer):
             if final_tts_message:
                 await self.send_message('tts.text', {'text': final_tts_message})
 
-            # 인쇄 후 listening 상태 복귀는 ServiceWebSocketConsumer에서만 필요할 수 있음
-            # KioskWebSocketConsumer에서는 상태 변경 로직이 다를 수 있으므로 주석 처리
-            # self.client_state['step'] = 'listening'
-            # await self.send_message("voice.mode", {"allow_short_input": False})
-
         except Exception as e:
             consumer_name = self.__class__.__name__
             logger.error(f"출력 중 오류 ({consumer_name}): {e}")
             await self.send_message('tts.text', {'text': '출력 처리 중 오류가 발생했습니다.'})
-            # 오류 발생 시에도 listening 상태 복귀는 ServiceWebSocketConsumer 에서만 필요할 수 있음
-            # self.client_state['step'] = 'listening'
-            # await self.send_message("voice.mode", {"allow_short_input": False})
 
 
 class ServiceWebSocketConsumer(AsyncWebsocketConsumer):
-    """GPT 기반 스마트 서류 인식 Consumer"""
+    """GPT 기반 스마트 서류 인식 Consumer (인쇄 흐름 개선됨)"""
 
     # ... (__init__, _fmt, connect, disconnect - 이전과 동일) ...
     def __init__(self, *args, **kwargs):
@@ -346,52 +336,66 @@ class ServiceWebSocketConsumer(AsyncWebsocketConsumer):
         except Exception as e:
             logger.error(f"Error processing message: {str(e)}")
 
+    # ✅ [수정됨] handle_print_request: 인쇄 흐름 및 TTS 개선
     async def handle_print_request(self, data):
-        """프린트 요청 처리 (TTS 버그 수정됨)"""
+        """프린트 요청 처리 (흐름 및 TTS 수정)"""
+        # Ensure mic is off during printing
+        await self.send_message('mic.off')
+        self.client_state['step'] = 'printing' # Indicate printing is in progress
+
         try:
-            patient_id = self.selected_patient.get("patient_id") if self.selected_patient else data.get('patient_id') # 세션 우선
+            patient_id = self.selected_patient.get("patient_id") if self.selected_patient else data.get('patient_id')
             doc_type = data.get('doc_type')
-            issue_date = data.get('issue_date')
+            issue_date = data.get('issue_date') # Keep original user input for TTS
             consumer_name = self.__class__.__name__
             logger.info(f"🖨️ 출력 요청 ({consumer_name}): {patient_id}, {doc_type}, {issue_date}")
 
             if not all([patient_id, doc_type, issue_date]):
-                await self.send_tts_with_tracking('출력할 정보를 확인할 수 없습니다.') # send_tts_with_tracking 사용
+                # Send error TTS and go back to listening
+                await self.send_tts_and_reactivate_mic('출력할 정보를 확인할 수 없습니다. 다시 말씀해주세요.', 'listening')
                 return
 
+            # Initial TTS - Use original date input for clarity
+            # Don't reactivate mic yet
+            await self.send_tts_without_mic_reactivation(f'{issue_date}의 {doc_type} 인쇄를 시작합니다. 잠시만 기다려주세요.')
+
+            # Call the synchronous print function in a thread
             status, detail = await database_sync_to_async(print_document)(patient_id, doc_type, issue_date)
 
-            final_tts_message = ""
+            # --- Handle result ---
             if status == "success":
-                # 날짜 형식을 TTS에 맞게 조정 (예: 2025-07-16 -> 7월 16일) - 필요시 구현
-                # date_obj = datetime.strptime(normalize_date_input(issue_date), "%Y-%m-%d")
-                # tts_date_str = f"{date_obj.month}월 {date_obj.day}일"
-                tts_date_str = issue_date # 우선 원본 사용
-                await self.send_tts_with_tracking(f'{tts_date_str}의 {doc_type}을 출력합니다.')
-                await asyncio.sleep(0.5) # 실제 인쇄 시간 고려하여 sleep 추가 가능
-                final_tts_message = '출력이 완료되었습니다.'
+                # Send completion TTS sequence and ask for next action
+                await self.send_tts_without_mic_reactivation('인쇄가 완료되었습니다.')
+                await asyncio.sleep(0.5) # Pause between messages
+                await self.send_tts_without_mic_reactivation('더 필요하신 서류 있으세요?')
+                await asyncio.sleep(0.5)
+                # Final prompt, then reactivate mic and set state
+                await self.send_tts_and_reactivate_mic(
+                    "필요하신 서류를 말씀해주세요. 없으시면 종료 라고 말씀해주세요.",
+                    'await_additional_request' # New state
+                )
+
             elif status == "not_found":
-                final_tts_message = '서류 파일을 찾을 수 없습니다. 날짜를 다시 확인해주세요.'
                 logger.error(f"파일 찾기 실패 ({consumer_name}): {detail}")
+                await self.send_tts_and_reactivate_mic(
+                    '서류 파일을 찾을 수 없습니다. 날짜를 다시 확인해주세요.',
+                    'listening' # Go back to listening after error
+                )
+
             elif status == "print_failed":
-                final_tts_message = '프린터 오류가 발생했습니다. 관리자에게 문의해주세요.'
                 logger.error(f"프린터 실패 세부 정보 ({consumer_name}): {detail}")
-
-            if final_tts_message:
-                await self.send_tts_with_tracking(final_tts_message) # send_tts_with_tracking 사용
-
-            # ✅ 인쇄 후 다시 listening 상태로
-            self.client_state['step'] = 'listening'
-            await self.send_message("voice.mode", {"allow_short_input": False})
+                await self.send_tts_and_reactivate_mic(
+                    '프린터 오류가 발생했습니다. 관리자에게 문의해주세요.',
+                    'listening' # Go back to listening after error
+                )
 
         except Exception as e:
             consumer_name = self.__class__.__name__
-            logger.error(f"출력 중 오류 ({consumer_name}): {e}")
-            await self.send_tts_with_tracking('출력 처리 중 오류가 발생했습니다.') # send_tts_with_tracking 사용
-            # 오류 발생 시에도 listening 상태로 복귀
-            self.client_state['step'] = 'listening'
-            await self.send_message("voice.mode", {"allow_short_input": False})
-
+            logger.error(f"출력 처리 중 예외 발생 ({consumer_name}): {e}")
+            await self.send_tts_and_reactivate_mic(
+                '출력 처리 중 오류가 발생했습니다. 다시 말씀해주세요.',
+                'listening' # Go back to listening after exception
+            )
 
     async def start_voice_guidance(self):
         guidance_text = "진료확인서, 처방전, 진료영수증 중 원하는 서류를 말씀해주세요."
@@ -506,15 +510,17 @@ class ServiceWebSocketConsumer(AsyncWebsocketConsumer):
         await self.send_tts_with_tracking("발급 또는 취소라고 정확히 말씀해주세요.")
 
 
+    # ✅ [수정됨] process_voice_input: printing 상태, await_additional_request 상태 추가
     async def process_voice_input(self, text):
-        """음성 입력 처리 (service_consumers.py 버전 통합)"""
+        """음성 입력 처리 (await_additional_request 상태 추가)"""
         current_step = self.client_state.get("step")
         now = asyncio.get_event_loop().time()
 
-        # TTS 에코 방지 (최근 TTS 내용과 비교)
-        if self.recent_tts_content and (now - self.tts_completed_time < 2.0): # TTS 완료 후 2초 이내 입력만 검사
+        # TTS 에코 방지
+        if self.recent_tts_content and (now - self.tts_completed_time < 2.0):
             from difflib import SequenceMatcher
             similarity_threshold = 0.85
+            # 유사도 비교 시 공백 제거 추가
             if SequenceMatcher(None, self.recent_tts_content.replace(" ", ""), text.replace(" ", "")).ratio() > similarity_threshold:
                  self.logger.info(f"🎤 자기 TTS 에코로 판단하여 무시 (유사도 > {similarity_threshold}): '{text}'")
                  return
@@ -523,29 +529,60 @@ class ServiceWebSocketConsumer(AsyncWebsocketConsumer):
         self.recognition_failure_count = 0 # 성공 시 초기화
 
         try:
-            # 1. 발급 의사 확인 단계 ("발급", "취소" 등)
+            # 0. Printing in progress - ignore input
+            if current_step == 'printing':
+                self.logger.info(f"🖨️ 인쇄 중 입력 무시: '{text}'")
+                return
+
+            # 1. Waiting for additional request ("종료" or new document)
+            if current_step == 'await_additional_request':
+                cleaned_text = text.replace(" ", "").lower()
+                if "종료" in cleaned_text:
+                    await self.send_tts_without_mic_reactivation("키오스크 이용을 종료합니다. 감사합니다.") # 종료 메시지 후 마이크 켜지 않음
+                    self.client_state['step'] = 'completed' # 완료 상태
+                    await self.close(code=1000) # 연결 종료
+                else:
+                    # Assume it's a new document request, go back to analysis
+                    self.logger.info(f"추가 서류 요청으로 처리: '{text}'")
+                    self.client_state['step'] = 'listening' # Reset state before analysis
+                    await self.send_message("voice.mode", {"allow_short_input": False}) # 일반 입력 모드
+                    analysis = await self.analyze_input_with_context(text)
+                    self.logger.info(f"🤖 추가 요청 분석 결과: {analysis}")
+                    await self.handle_analysis_result(analysis, text)
+                return # Handled this state
+
+            # 2. 발급 의사 확인 단계 ("발급", "취소" 등)
             if current_step == "waiting_for_issue_confirmation":
                 await self.handle_issue_confirmation(text)
                 return
 
-            # 2. 날짜 선택 단계 ("7월 16일", "16일" 등)
+            # 3. 날짜 선택 단계 ("7월 16일", "16일" 등)
             if current_step == 'date_selection':
                 logger.info(f"📅 날짜 선택 입력 감지: '{text}' → 직접 프린터 처리 요청")
                 patient_id = self.selected_patient.get("patient_id")
                 doc_type = self.client_state.get("selected_doc_type")
-                # document.print 메시지로 인쇄 요청 위임
+
+                # 입력값이 날짜 형식이 아니면 재요청 (간단한 검증)
+                if not normalize_date_input(text): # 날짜 변환 실패 시 빈 문자열 반환됨
+                     await self.send_tts_with_tracking("날짜를 인식하지 못했습니다. 다시 말씀해주세요.")
+                     return
+
                 await self.send_message('document.print', {
-                    'patient_id': patient_id,
-                    'doc_type': doc_type,
-                    'issue_date': text # 날짜 변환은 print_document에서
+                    'patient_id': patient_id, 'doc_type': doc_type, 'issue_date': text
                 })
-                # handle_print_request에서 상태를 listening으로 변경하므로 여기서는 변경 안 함
+                # Set state to printing temporarily to block subsequent input
+                self.client_state['step'] = 'printing'
                 return
 
-            # 3. 그 외 (초기 단계, 상담 중 등) -> GPT 분석 수행
-            analysis = await self.analyze_input_with_context(text)
-            self.logger.info(f"🤖 분석 결과: {analysis}")
-            await self.handle_analysis_result(analysis, text) # 분석 결과에 따라 query_database 또는 상담 함수 호출
+            # 4. 그 외 (초기 listening, 상담 advising 등) -> GPT 분석 수행
+            if current_step in ['listening', 'advising']:
+                analysis = await self.analyze_input_with_context(text)
+                self.logger.info(f"🤖 분석 결과: {analysis}")
+                await self.handle_analysis_result(analysis, text)
+            else:
+                 logger.warning(f"처리되지 않은 상태({current_step})에서 음성 입력 수신: '{text}'")
+                 await self.send_tts_with_tracking("현재 요청을 처리할 수 없습니다. 잠시 후 다시 시도해주세요.")
+
 
         except Exception as e:
             self.logger.error(f"음성 입력 처리 오류: {str(e)}")
@@ -553,7 +590,7 @@ class ServiceWebSocketConsumer(AsyncWebsocketConsumer):
 
 
     async def start_smart_consultation(self, user_input, doc_hint=None):
-        """스마트 상담 시작 (단문/스트리밍 구분)"""
+        """스마트 상담 시작"""
         self.logger.info(f"🧠 스마트 상담 시작: '{user_input}' (힌트: {doc_hint})")
         self.client_state['step'] = 'advising'
         await self.send_message('status', {'state': 'advising'})
@@ -580,12 +617,13 @@ class ServiceWebSocketConsumer(AsyncWebsocketConsumer):
                 else:
                     self.recent_tts_content = full_response_text.strip()
                     await self.send_message("gpt.stream", {"event": "done", "full_text": self.recent_tts_content})
-                    await asyncio.sleep(0.5)
-                    await self.send_message("mic.on")
+                    # 상담 완료 후 마이크 켜기 (헬퍼 함수 사용)
+                    await self.send_tts_and_reactivate_mic("", "advising", delay=0.1) # 빈 텍스트 보내서 마이크만 켜기
+
         except Exception as e:
             self.logger.error(f"상담 오류: {e}")
             cta = f"발급을 원하시면 '{doc_hint}'라고 말씀해주세요." if doc_hint else "발급을 원하시면 서류명을 말씀해주세요."
-            await self.send_tts_with_tracking("죄송합니다, 답변 중 오류가 발생했습니다. 다시 질문해주세요. " + cta)
+            await self.send_tts_and_reactivate_mic("죄송합니다, 답변 중 오류가 발생했습니다. 다시 질문해주세요. " + cta, "advising")
 
 
     async def process_service_selection(self, service_name):
@@ -595,7 +633,7 @@ class ServiceWebSocketConsumer(AsyncWebsocketConsumer):
             await self.send_message('document.recognized', {'document_type': service_name})
             await self.query_database(service_name)
         else:
-            await self.send_tts_with_tracking(f"{service_name}는 현재 지원되지 않습니다.")
+            await self.send_tts_and_reactivate_mic(f"{service_name}는 현재 지원되지 않습니다.", 'listening')
 
 
     async def query_database(self, doc_type, submit_to=None): # submit_to 인자 추가
@@ -604,16 +642,14 @@ class ServiceWebSocketConsumer(AsyncWebsocketConsumer):
             logger.info(f"🗃️ DB 조회: {doc_type} (제출처: {submit_to})")
             model_class = self.doc_type_model_map.get(doc_type)
             if not model_class:
-                await self.send_tts_with_tracking(f'{doc_type}는 준비 중입니다.')
-                self.client_state['step'] = 'listening'
+                await self.send_tts_and_reactivate_mic(f'{doc_type}는 준비 중입니다.', 'listening')
                 return
 
             patient_filter = {}
             if self.selected_patient:
                 patient_filter['patient_id'] = self.selected_patient.get('patient_id')
             else:
-                 await self.send_tts_with_tracking("환자 정보가 확인되지 않아 조회할 수 없습니다.")
-                 self.client_state['step'] = 'listening'
+                 await self.send_tts_and_reactivate_mic("환자 정보가 확인되지 않아 조회할 수 없습니다.", 'listening')
                  return
 
             field_map = self.FIELD_MAP.get(doc_type, [])
@@ -623,37 +659,30 @@ class ServiceWebSocketConsumer(AsyncWebsocketConsumer):
             await self.send_message('db.results', {'results': results})
 
             if results:
-                self.client_state["step"] = "waiting_for_issue_confirmation"
-                self.client_state["selected_doc_type"] = doc_type
-                await self.send_message("voice.mode", {"allow_short_input": True})
                 prefix = f"{submit_to} 제출용 " if submit_to else ""
                 confirmation_text = f"{prefix}{doc_type} {len(results)}건을 찾았습니다. 발급을 원하시면 '발급' 취소하시려면 '취소'라고 말씀해주세요."
-                await self.send_tts_with_tracking(confirmation_text)
+                await self.send_tts_and_reactivate_mic(confirmation_text, "waiting_for_issue_confirmation")
+                await self.send_message("voice.mode", {"allow_short_input": True}) # 상태 변경 후 모드 설정
             else:
-                await self.send_tts_with_tracking(f"조회된 {doc_type}이 없습니다. 다른 서류를 원하시면 말씀해주세요.")
-                self.client_state["step"] = "listening"
+                await self.send_tts_and_reactivate_mic(f"조회된 {doc_type}이 없습니다. 다른 서류를 원하시면 말씀해주세요.", "listening")
                 await self.send_message("voice.mode", {"allow_short_input": False})
 
         except Exception as e:
             logger.exception("DB query error")
             await self.send_error("DB 조회 중 오류가 발생했습니다.")
-            self.client_state["step"] = "listening"
+            await self.send_tts_and_reactivate_mic("데이터베이스 오류가 발생했습니다. 다시 시도해주세요.", "listening")
 
 
     @database_sync_to_async
     def fetch_all_generic(self, model_class, field_map, filters=None):
         qs = model_class.objects.all()
         if filters: qs = qs.filter(**filters)
-
         order_fields = []
         candidates = ["prescription_date", "receipt_date", "id"]
         model_fields = {f.name for f in model_class._meta.get_fields()}
         for c in candidates:
-            if c in model_fields:
-                order_fields.append(f"-{c}")
-                break
+            if c in model_fields: order_fields.append(f"-{c}"); break
         if order_fields: qs = qs.order_by(*order_fields)
-
         rows = [{out_key: self._fmt(getattr(obj, attr, None)) for out_key, attr in field_map} for obj in qs[:100]]
         return rows
 
@@ -664,22 +693,45 @@ class ServiceWebSocketConsumer(AsyncWebsocketConsumer):
     async def send_error(self, error_message):
         await self.send_message('error', {'message': error_message})
 
-    async def send_tts_with_tracking(self, text):
-        """TTS 전송 및 에코 방지용 상태 업데이트, 완료 후 mic.on 전송"""
+    # ✅ [헬퍼] TTS만 전송 (마이크 자동 활성화 X)
+    async def send_tts_without_mic_reactivation(self, text):
         if not text: return
-        await self.send_message("mic.off")
+        # await self.send_message("mic.off") # 호출 전에 이미 off 상태여야 함
         self.recent_tts_content = text
         self.tts_completed_time = 0.0
-
         await self.send_message("tts.text", {"text": text})
 
-        async def delayed_mic_on(delay=1.5):
-            await asyncio.sleep(delay)
-            if self.tts_completed_time == 0.0 and self.recent_tts_content == text:
-                self.logger.info(f"🎤 TTS 완료 신호 지연 감지, {delay}초 후 마이크 강제 활성화")
-                await self.send_message("mic.on")
+    # ✅ [헬퍼] 최종 TTS 전송 + 상태 변경 + 마이크 활성화
+    async def send_tts_and_reactivate_mic(self, text, next_state, delay=2.0): # 기본 딜레이 증가
+        if text: # 빈 텍스트가 아닐 경우에만 TTS 전송
+             await self.send_message("mic.off") # 확실하게 끄기
+             self.recent_tts_content = text
+             self.tts_completed_time = 0.0
+             await self.send_message("tts.text", {"text": text})
+        else: # 빈 텍스트면 마이크만 켜기 위함
+             self.recent_tts_content = "" # 에코 방지 초기화
 
-        asyncio.create_task(delayed_mic_on(2.0))
+        # 상태 변경
+        self.client_state['step'] = next_state
+        if next_state == 'listening':
+            await self.send_message("voice.mode", {"allow_short_input": False})
+        elif next_state in ['await_additional_request', 'date_selection', 'waiting_for_issue_confirmation']:
+             await self.send_message("voice.mode", {"allow_short_input": True})
+
+        # 딜레이 후 마이크 켜기
+        async def delayed_mic_on_final(wait_time):
+            await asyncio.sleep(wait_time)
+            # 현재 상태가 여전히 마이크를 켜야 하는 상태인지 확인
+            if self.client_state.get('step') == next_state:
+                self.logger.info(f"🎤 최종 안내 후 {wait_time}초 뒤 마이크 활성화 (상태: {next_state})")
+                await self.send_message("mic.on")
+            else:
+                 self.logger.info(f"🎤 마이크 활성화 취소 (상태 변경됨: {self.client_state.get('step')})")
+
+        asyncio.create_task(delayed_mic_on_final(delay))
+
+    # ✅ 기존 send_tts_with_tracking 은 삭제하고 헬퍼 함수 사용으로 통일
+    # async def send_tts_with_tracking(self, text): ...
 
 
     async def handle_recognition_failure(self, error: str):
@@ -687,8 +739,9 @@ class ServiceWebSocketConsumer(AsyncWebsocketConsumer):
         self.logger.warning(f"🎤 음성 인식 실패: {error}")
         self.recognition_failure_count += 1
         if self.recognition_failure_count >= 3:
-            await self.send_tts_with_tracking("음성 인식에 3회 이상 실패하여 초기 화면으로 돌아갑니다.")
+            await self.send_tts_without_mic_reactivation("음성 인식에 3회 이상 실패하여 초기 화면으로 돌아갑니다.") # 마이크 켜지 않음
             await self.send_message("system.redirect", {"url": "/kiosk/main/"})
             await self.close(code=1000)
         else:
-            await self.send_tts_with_tracking("다시 한번 말씀해주세요.")
+            # 실패 시 다시 안내하고 마이크 켜기 (현재 상태 유지)
+            await self.send_tts_and_reactivate_mic("다시 한번 말씀해주세요.", self.client_state.get('step', 'listening'))

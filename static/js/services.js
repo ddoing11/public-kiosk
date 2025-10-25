@@ -109,7 +109,7 @@ function startRecognition() {
   recognition.interimResults = false; // 중간결과 X
 
   recognition.onresult = (event) => {
-    const finalTranscript = event.results[0][0].transcript.trim();
+    const finalTranscript = event.results[0][0].transcript.trim().replace(/[.,?!]/g, "");
     console.log('🎤 인식된 텍스트:', finalTranscript);
 
     if (shouldIgnoreTranscript(finalTranscript)) {

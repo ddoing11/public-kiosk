@@ -209,7 +209,7 @@ function startSpeechRecognition() {
   currentRecognition.continuous = false;
 
   currentRecognition.onresult = function (event) {
-    const result = event.results[0][0].transcript.trim();
+    const result = event.results[0][0].transcript.trim().replace(/[.,?!]/g, "");
     console.log('🎤 인식된 텍스트:', result);
 
     // 쿨다운/에코 차단 (단, 본인확인 문구/이름은 예외 적용)

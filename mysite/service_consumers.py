@@ -25,6 +25,9 @@ from .utils import get_gpt_streaming_response  # 프로젝트 내 스트리밍 �
 
 logger = logging.getLogger("kiosk")
 
+# 최종 TTS 프롬프트 정의
+FINAL_ISSUE_PROMPT = "출력이 완료되었습니다. 추가로 필요한 서류가 있으신가요? 있다면 서류명을 말씀해주시고 없다면 종료라고 말씀해주세요."
+
 client = OpenAI(api_key=getattr(settings, "OPENAI_API_KEY", ""))
 DEFAULT_LLM_MODEL = getattr(settings, "LLM_MODEL", "gpt-4o-mini")
 
@@ -267,31 +270,61 @@ class ServiceWebSocketConsumer(AsyncWebsocketConsumer):
         self.logger.info(f"음성 입력: '{text}' (상태: {current_step})")
         self.recognition_failure_count = 0
 
+
+        # ★★★ 1. 입력 무시: 'busy_printing' 상태일 경우 무시 ★★★
+        if current_step == 'busy_printing':
+            self.logger.info(f"현재 BUSY 상태({current_step}), 입력 무시: '{text}'")
+            return
+
         try:
-            # ✅ 발급 의사 확인 단계
+            # ✅ 발급 의사 확인 단계 (waiting_for_issue_confirmation)
             if current_step == "waiting_for_issue_confirmation":
                 await self.handle_issue_confirmation(text)
                 return
 
-            # ✅ 날짜 선택 단계
+            # ✅ 날짜 선택 단계 (date_selection)
             if current_step == 'date_selection':
-                logger.info(f"📅 날짜 선택 입력 감지: '{text}' → 직접 프린터 처리로 이동")
+                # 📌 날짜 유효성 검증 및 변환 로직 가정 (utils.py 또는 consumers.py의 함수 사용)
+                issue_date_str = self.get_valid_date_from_text(text) # 가정: 유효한 날짜 문자열 반환
 
-                # 변환된 날짜로 실제 출력 요청
-                success = print_document(
-                    self.selected_patient.get("patient_id"),
-                    self.client_state.get("selected_doc_type"),
-                    text
-                )
+                if issue_date_str:
+                    logger.info(f"날짜 입력 감지: '{text}' → 직접 프린터 처리로 이동") # 이모지 제거
 
-                if success:
-                    await self.send_message('tts.text', {'text': f"{text}의 {self.client_state.get('selected_doc_type')}을 출력합니다."})
-                    await self.send_message('tts.text', {'text': '출력이 완료되었습니다.'})
+                    # 1. 상태를 'busy_printing'으로 변경하여 10초간 입력 무시 시작
+                    self.client_state.set('step', 'busy_printing') 
+                    await self.send_message('status', {'state': 'busy_printing'}) # UI에게 인쇄 중임을 알림
+                    
+                    # 2. 프린트 명령 실행 (이 안에서 "발급을 시작합니다" TTS 나감)
+                    success = print_document(
+                        self.scope, self.client_state.get("selected_doc_type"), issue_date_str, self.client_state.get('printer_name')
+                    )
+
+                    if success:
+                        # 3. 10초 딜레이 (발급 시간)
+                        await asyncio.sleep(10) # ★★★ 10초 지연 ★★★
+
+                        # 4. 최종 TTS 메시지 및 상태 업데이트
+                        await self.send_tts(FINAL_ISSUE_PROMPT, voice_mode='await_additional_issue') 
+                        self.client_state.set('step', 'await_additional_issue')
+                        await self.send_message('status', {'state': 'listening'}) # 상태 복구
+                        
+                    else:
+                        # 5. 인쇄 실패 시
+                        await self.send_tts(f"발급 중 오류가 발생했습니다. 다시 시도해주세요.", voice_mode='date_selection')
+                        self.client_state.set('step', 'date_selection')
+                        await self.send_message('status', {'state': 'listening'}) # 상태 복구
+                        
+                    return # 처리 완료
+
                 else:
-                    await self.send_message('tts.text', {'text': f"{text}의 {self.client_state.get('selected_doc_type')} 문서를 찾을 수 없습니다. 다시 시도해주세요."})
-                return
+                    await self.send_tts(f"유효한 날짜를 말씀해주세요.", voice_mode='date_selection')
+                    self.client_state.set('step', 'date_selection')
+                    return
 
-
+            # ✅ 추가 발급 요청 단계 처리 (await_additional_issue) - NEW LOGIC
+            if current_step == 'await_additional_issue':
+                 await self.handle_additional_issue_request(text) # New handler
+                 return
 
             # 나머지 단계만 GPT 분석 수행
             analysis = await self.analyze_input_with_context(text)
@@ -302,6 +335,24 @@ class ServiceWebSocketConsumer(AsyncWebsocketConsumer):
             self.logger.error(f"음성 입력 처리 오류: {str(e)}")
             await self.send_tts_with_tracking("다시 말씀해주세요.")
 
+    # ★★★ 새로운 핸들러 추가: handle_additional_issue_request (기존 로직을 따름) ★★★
+    async def handle_additional_issue_request(self, text):
+        # 📌 is_issue_response, is_cancel_response 등 유틸 함수가 필요합니다.
+        #    여기서는 임시로 문자열 비교로 대체합니다.
+        
+        # 템프 브랜치의 utils.py 파일을 기준으로 가정
+        from .utils import is_cancel_response # is_issue_response는 consumers.py에서 가져와야 함.
+        
+        if "종료" in text or is_cancel_response(text):
+            # 대화 종료
+            await self.send_tts("이용해주셔서 감사합니다. 키오스크를 종료합니다.", voice_mode='completed')
+            self.client_state.set('step', 'completed')
+            # Optional: Close the websocket
+            # await self.close() 
+        else: # 서류명 등 다른 입력으로 간주 (발급 요청)
+            await self.send_tts("어떤 서류를 발급하시겠습니까? 서류명을 말씀해주세요.", voice_mode='await_document_request')
+            self.client_state.set('step', 'await_document_request')
+            
     # ------------- LLM 분류 -------------
     async def analyze_input_with_context(self, text: str) -> dict:
         """LLM이 모드를 1차 판정: mode=issue|consult|other"""

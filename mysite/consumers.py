@@ -61,7 +61,7 @@ def print_document(patient_id: str, doc_type: str, issue_date: str) -> (str, str
     실제 PDF 파일을 찾아 인쇄 요청 (SumatraPDF 사용)
     """
     try:
-        logger.info(f"🖨️ [발급요청] {doc_type} ({issue_date}) using SumatraPDF") # 로그 변경
+        logger.info(f"[발급요청] {doc_type} ({issue_date}) using SumatraPDF") # 로그 변경
 
         issue_date = normalize_date_input(issue_date)
 
@@ -88,10 +88,10 @@ def print_document(patient_id: str, doc_type: str, issue_date: str) -> (str, str
             logger.info(f"📂 시도: {file_path}")
             if os.path.exists(file_path):
                 found_file = file_path
-                logger.info(f"✅ 파일 발견: {file_path}")
+                logger.info(f"파일 발견: {file_path}")
                 break
         if not found_file:
-            logger.error(f"❌ 모든 패턴에서 파일 찾기 실패")
+            logger.error(f"모든 패턴에서 파일 찾기 실패")
             return ("not_found", "모든 패턴에서 파일 찾기 실패")
         # --- (여기까지 파일 찾기) ---
 
@@ -111,7 +111,7 @@ def print_document(patient_id: str, doc_type: str, issue_date: str) -> (str, str
             found_file
         ]
 
-        logger.info(f"✅ SumatraPDF CLI 명령 실행 (Run): {command}")
+        logger.info(f"SumatraPDF CLI 명령 실행 (Run): {command}")
         # run을 사용하고 timeout 설정
         result = subprocess.run(command, capture_output=True, text=True, timeout=15, encoding='cp949', errors='ignore')
 
@@ -121,7 +121,7 @@ def print_document(patient_id: str, doc_type: str, issue_date: str) -> (str, str
             logger.error(f"❌ {error_detail}")
             return ("print_failed", error_detail)
 
-        logger.info(f"✅ 프린트 명령 전송 완료 (SumatraPDF 종료 확인): {found_file} -> {printer_name}")
+        logger.info(f"프린트 명령 전송 완료 (SumatraPDF 종료 확인): {found_file} -> {printer_name}")
         return ("success", found_file)
 
     except subprocess.TimeoutExpired:

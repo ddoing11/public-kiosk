@@ -1,304 +1,145 @@
-import sys
-sys.stdout.reconfigure(encoding='utf-8')  # ✅ Windows 콘솔 유니코드 에러 방지
+# mysite/simplified_message_router.py
+
+"""
+simplified_message_router.py (v3 - 안정화)
+
+- `main.py` 대신 `asgi.py` (Daphne/Uvicorn)와 통합되도록 수정.
+- `state_manager` v3 (`KioskStateManager`)와 호환되도록 수정.
+- LLM/TTS/DB 핸들러를 `state_manager` 내부로 이동시킴 (router는 단순 메시지 전달만)
+- 비동기(async) 처리 강화.
+- Django 세션 및 인증 로직 제거 (키오스크는 비인증 세션 기반)
+"""
 
 import json
-import asyncio
-import re
-import difflib
-import time
-from datetime import datetime
-from .state_manager import HospitalStateManager
-from .patient_handler import PatientInfoHandler
-from .audio_handler import HospitalAudioHandler
-from .utils import (
-    clean_speech_input,
-    is_positive_response,
-    is_negative_response,
-    analyze_intent_with_gpt,
-)
-from .printer_handler import PrinterHandler
+import logging
+from .state_manager import KioskStateManager # ★ 여기가 KioskStateManager 여야 합니다 ★
+from .database_handler import DatabaseManager
 
-
-# ------------------------------------------------
-# 🧠 발급 인식 보정 ("8급", "팔급", "출력" 등 포함)
-# ------------------------------------------------
-def is_issue_response(text: str) -> bool:
-    text = text.strip().replace(" ", "")
-    issue_words = ["발급", "8급", "8금", "팔급", "밝읍", "받급", "출력", "인쇄", "프린트"]
-    return any(word in text for word in issue_words)
-
+# 로거 설정
+logger = logging.getLogger('kiosk')
 
 class HospitalMessageRouter:
-    def __init__(self):
-        self.state_manager = HospitalStateManager()
-        self.patient_handler = PatientInfoHandler()
-        self.audio_handler = HospitalAudioHandler()
-        self.printer_handler = PrinterHandler()
-        self.last_tts_completed = True
-        self.last_tts_text = ""
-        self.last_tts_done_time = 0
-        self.pending_tts_futures = {}
+    """
+    WebSocket 메시지를 수신하여 KioskStateManager로 전달하고,
+    StateManger의 콜백(TTS)을 클라이언트로 전송하는 비동기 라우터.
+    """
+    def __init__(self, send_callback):
+        self.send_callback = send_callback  # WebSocket 'send' 함수 (async)
+        self.db_manager = DatabaseManager()
 
-    # ------------------------------------------------
-    # 🔹 클라이언트 연결 시
-    # ------------------------------------------------
-    async def handle_connection(self, websocket):
-        state = self.state_manager.add_client(websocket)
-        await self.audio_handler.welcome_message(websocket)
-        state["step"] = "await_voice_confirmation"
-        state["last_input_time"] = datetime.now()
-        return state
+        # ★ 여기가 KioskStateManager 여야 합니다 ★
+        self.state_manager = KioskStateManager(
+            send_callback=self.send_tts_message,
+            db_manager=self.db_manager
+        )
+        logger.info(f"[Router] HospitalMessageRouter v3 (KioskStateManager) 초기화 완료.")
 
-    # ------------------------------------------------
-    # 🔹 메인 메시지 처리
-    # ------------------------------------------------
-    async def process_message(self, websocket, message):
+    async def handle_message(self, text_data):
+        """
+        클라이언트로부터 WebSocket 메시지를 비동기로 수신합니다.
+        """
         try:
-            data = json.loads(message) if isinstance(message, str) else message
+            data = json.loads(text_data)
+            message_type = data.get('type', '')
+            logger.debug(f"[Router] 메시지 수신: {message_type}, 데이터: {data.get('text') or data.get('patient', {}).get('patient_name')}")
+
+            if message_type == 'stt.result':
+                text = data.get('text', '').strip()
+                if text:
+                    # StateManager의 비동기 핸들러 호출
+                    await self.state_manager.handle_user_input(text)
+
+            elif message_type == 'user.confirmation_start':
+                # '본인 확인 시작' (이름 검색 후 확인 단계 진입 시)
+                patient_data = data.get('patient')
+                if patient_data:
+                    await self.state_manager.start_user_confirmation(patient_data)
+
+            elif message_type == 'audio.tts_playback_complete':
+                # (v3 신규) 클라이언트 TTS 재생 완료 신호
+                logger.debug("[Router] 클라이언트 TTS 재생 완료 신호 수신")
+                await self.state_manager.notify_tts_playback_complete()
+
+            else:
+                logger.warning(f"[Router] 알 수 없는 메시지 타입: {message_type}")
+
         except json.JSONDecodeError:
-            data = {"type": "speech.text", "text": message}
-
-        # ✅ TTS 완료 신호
-        if data.get("type") == "tts.complete":
-            group_id = data.get("group_id")
-            self.last_tts_completed = True
-            self.last_tts_done_time = time.time()
-            print(f"✅ 실제 TTS 종료 신호 수신 (group={group_id})")
-            if group_id and group_id in self.pending_tts_futures:
-                fut = self.pending_tts_futures.pop(group_id)
-                if not fut.done():
-                    fut.set_result(True)
-            return
-
-        # ✅ 일반 텍스트 메시지
-        state = self.state_manager.get_state(websocket)
-        if not state:
-            print("⚠️ 상태를 찾을 수 없음 (세션 만료)")
-            return
-
-        cleaned_text = clean_speech_input(data.get("text", message))
-        state["last_input_time"] = datetime.now()
-        current_step = state.get("step", "init")
-
-        # 🔎 자기 에코 방지
-        if self._is_self_tts_echo(cleaned_text):
-            print(f"🧩 자기 TTS 에코로 판단, 임시 무시: '{cleaned_text}'")
-            asyncio.create_task(self._check_for_silence_and_prompt(websocket))
-            return
-
-        # ------------------------------------------------
-        # 🎯 GPT 분석 (특정 단계는 생략)
-        # ------------------------------------------------
-        if current_step not in [
-            "await_patient_name",
-            "await_document_request",
-            "await_date_selection",
-            "date_selection",  # ✅ 날짜 선택 단계는 GPT 분석 생략
-            "await_additional_issue",
-            "waiting_for_issue_confirmation",
-        ]:
-            print(f"🧠 GPT 의도 분석 시작: '{cleaned_text}'")
-            intent_result = await analyze_intent_with_gpt(cleaned_text)
-            mode = intent_result.get("mode")
-            doc_type = intent_result.get("document_type")
-            submit_to = intent_result.get("submit_to")
-            print(f"🎯 분석 결과: {intent_result}")
-        else:
-            print(f"⏭️ GPT 분석 생략 (단계: {current_step})")
-            intent_result = {}
-
-        # ------------------------------------------------
-        # ✅ 단계별 처리
-        # ------------------------------------------------
-        if current_step == "await_voice_confirmation":
-            if is_positive_response(cleaned_text):
-                await self._send_tts_safe_grouped(websocket, "이름을 말씀해주세요.")
-                await self.audio_handler.patient_info_prompt(websocket)
-                state["step"] = "await_patient_name"
-            elif is_negative_response(cleaned_text):
-                await self._send_tts_safe_grouped(websocket, "일반 키오스크를 이용해 주세요.")
-                state["step"] = "completed"
-
-        elif current_step == "await_patient_name":
-            new_step = await self.patient_handler.handle_patient_name_input(
-                websocket, cleaned_text, state
-            )
-            state["step"] = new_step
-
-        elif current_step == "await_document_request":
-            state["doc_type"] = cleaned_text
-            await self._send_tts_safe_grouped(
-                websocket, f"{cleaned_text}을(를) 언제 발급받으셨나요? 날짜를 말씀해주세요."
-            )
-            state["step"] = "await_date_selection"
-
-        # ------------------------------------------------
-        # 🔹 날짜 입력 시 (출력 로직)
-        # ------------------------------------------------
-        elif current_step in ["await_date_selection", "date_selection"]:
-            print(f"🧩 날짜 입력 감지: '{cleaned_text}' (단계: {current_step})")
-            date_str = cleaned_text.strip()
-            doc_type = state.get("selected_doc_type") or state.get("doc_type")
-
-            # ✅ doc_type 복원
-            if not doc_type and state.get("recognized_doc_type"):
-                doc_type = state["recognized_doc_type"]
-                state["doc_type"] = doc_type
-                print(f"🧩 recognized_doc_type 복원됨: {doc_type}")
-
-            if not doc_type:
-                await self._send_tts_safe_grouped(
-                    websocket, "어떤 서류의 날짜인지 알 수 없습니다. 다시 말씀해주세요."
-                )
-                return
-
-            # ✅ 프린터 로직
-            print(f"📄 프린터 처리 시작: {doc_type} ({date_str})")
-            await self._send_tts_safe_grouped(
-                websocket, f"{date_str}의 {doc_type} 발급을 준비 중입니다. 잠시만 기다려주세요."
-            )
-
-            try:
-                await self.printer_handler.prepare_print_job(websocket, doc_type, date_str)
-                await asyncio.sleep(5)
-                await self._send_tts_safe_grouped(
-                    websocket, "발급이 완료되었습니다. 다른 서류를 발급하시겠습니까?"
-                )
-                state["step"] = "await_additional_issue"
-            except Exception as e:
-                print(f"❌ 프린터 처리 중 오류: {e}")
-                await self._send_tts_safe_grouped(
-                    websocket, "발급 중 오류가 발생했습니다. 다시 시도해주세요."
-                )
-            return  # ✅ GPT 분석으로 절대 안 내려가도록 완전 차단
-
-        elif current_step == "await_additional_issue":
-            if is_positive_response(cleaned_text):
-                await self._send_tts_safe_grouped(websocket, "어떤 서류를 발급하시겠습니까?")
-                state["step"] = "await_document_request"
-            elif is_negative_response(cleaned_text):
-                await self._send_tts_safe_grouped(
-                    websocket, "이용해주셔서 감사합니다. 대화가 종료됩니다."
-                )
-                state["step"] = "completed"
-
-        # ------------------------------------------------
-        # 🧩 발급 확인 단계 (8급 / 팔급 / 출력 등 포함)
-        # ------------------------------------------------
-        elif current_step == "waiting_for_issue_confirmation":
-            if is_issue_response(cleaned_text) or "8급" in cleaned_text.replace(" ", "") or "팔급" in cleaned_text.replace(" ", ""):
-                print("✅ 발급 의사 확정 → 날짜 선택 단계 진입 (8급/팔급 포함)")
-                recognized_doc = state.get("recognized_doc_type")
-                if recognized_doc:
-                    state["doc_type"] = recognized_doc
-                    print(f"🧩 recognized_doc_type 유지됨: {recognized_doc}")
-                else:
-                    print("⚠️ recognized_doc_type 없음 → 진료확인서 기본값 사용")
-                    state["doc_type"] = "진료확인서"
-
-                state["step"] = "date_selection"
-                await self._send_tts_safe_grouped(
-                    websocket, "원하는 날짜를 말씀하시거나 '취소'라고 말씀해주세요."
-                )
-                return  # ✅ 반드시 return 추가
-
-            # 🔹 취소 응답 처리
-            if is_negative_response(cleaned_text):
-                await self._send_tts_safe_grouped(
-                    websocket, "발급을 취소하셨습니다. 다른 서류가 필요하신가요?"
-                )
-                state["step"] = "await_additional_issue"
-                return
-
-            # 🔹 위 두 조건 모두 아니라면 안내 반복
-            await self._send_tts_safe_grouped(
-                websocket, "발급 또는 취소라고 말씀해주세요."
-            )
-            return
-
-        # ------------------------------------------------
-        # 🧩 전역 발급 명령 처리
-        # ------------------------------------------------
-        elif is_issue_response(cleaned_text):
-            if current_step in ["await_date_selection", "date_selection"]:
-                print(f"⚠️ 이미 날짜 선택 단계이므로 '발급' 명령 무시: {cleaned_text}")
-                return
-            state["step"] = "date_selection"
-            await self._send_tts_safe_grouped(
-                websocket, "원하는 날짜를 말씀하시거나 '취소'라고 말씀해주세요."
-            )
-
-    # ------------------------------------------------
-    # 🔊 안정형 TTS
-    # ------------------------------------------------
-    async def _send_tts_safe(self, websocket, text: str, activate_mic=True):
-        if not text:
-            return
-        waited = 0
-        while not self.last_tts_completed and waited < 5.0:
-            await asyncio.sleep(0.1)
-            waited += 0.1
-        self.last_tts_completed = False
-        self.last_tts_text = text.strip()
-        group_id = f"tts_{int(asyncio.get_event_loop().time() * 1000)}"
-        tts_future = asyncio.get_event_loop().create_future()
-        self.pending_tts_futures[group_id] = tts_future
-        payload = {"type": "tts.text", "text": text, "group_id": group_id}
-        await websocket.send(json.dumps(payload))
-        print(f"🔊 [TTS 전송] {text} (group={group_id})")
-
-        try:
-            await asyncio.wait_for(tts_future, timeout=20.0)
-        except asyncio.TimeoutError:
-            print(f"⚠️ [TTS 완료 신호 타임아웃: {group_id}]")
-        finally:
-            self.pending_tts_futures.pop(group_id, None)
-            self.last_tts_completed = True
-
-        if activate_mic:
-            await asyncio.sleep(0.4)
-            await websocket.send(json.dumps({"type": "mic.on"}))
-
-    # ------------------------------------------------
-    # 🔊 문장 단위 그룹 TTS
-    # ------------------------------------------------
-    async def _send_tts_safe_grouped(self, websocket, full_text: str):
-        sentences = re.split(r"(?<=[\.!?]|요\.|니다\.|세요\.)\s*", full_text.strip())
-        sentences = [s.strip() for s in sentences if s.strip()]
-        for i, sentence in enumerate(sentences):
-            await self._send_tts_safe(websocket, sentence, activate_mic=False)
-            if i < len(sentences) - 1:
-                await asyncio.sleep(0.05)
-        await asyncio.sleep(0.05)
-        await websocket.send(json.dumps({"type": "mic.on"}))
-        print("🎤 모든 문장 재생 완료 후 마이크 재활성화")
-
-    # ------------------------------------------------
-    # 🧩 자기 TTS 에코 판별
-    # ------------------------------------------------
-    def _is_self_tts_echo(self, cleaned_text: str) -> bool:
-        if not cleaned_text or not self.last_tts_text:
-            return False
-        t1, t2 = self.last_tts_text.strip(), cleaned_text.strip()
-        if len(t2) < 5:
-            return False
-        similarity = difflib.SequenceMatcher(None, t1, t2).ratio()
-        if similarity > 0.95:
-            return True
-        s1 = set(t1.replace(" ", ""))
-        s2 = set(t2.replace(" ", ""))
-        if len(s1) and len(s2):
-            ratio = len(s1 & s2) / max(len(s1), len(s2))
-            if ratio > 0.96:
-                return True
-        return False
-
-    # ------------------------------------------------
-    # 🔚 연결 종료
-    # ------------------------------------------------
-    async def cleanup_connection(self, websocket):
-        try:
-            self.state_manager.remove_client(websocket)
-            print("🧹 연결 정리 완료")
+            logger.error(f"[Router] JSON 디코딩 오류: {text_data}")
         except Exception as e:
-            print(f"⚠️ 연결 정리 중 오류 발생: {e}")
+            logger.critical(f"[Router] 메시지 처리 중 심각한 오류: {e}", exc_info=True)
+            await self.send_error_message(f"서버 내부 오류 발생: {e}")
+
+    async def send_tts_message(self, text, step=None):
+        """
+        StateManager가 호출하는 콜백 함수.
+        TTS 텍스트를 클라이언트로 전송합니다. (비동기)
+        """
+        logger.info(f"[Router] TTS 전송 -> {text}")
+        message = {'type': 'tts.text', 'text': text}
+
+        # 현재 상태(step)가 제공되면 함께 전송
+        if step:
+            # 📌 step 값이 dict 형태일 경우 처리 추가 (state_manager v3 호환)
+            if isinstance(step, dict):
+                 message.update(step) # type, text 등 추가 정보 포함 가능
+            else:
+                 message['step'] = step # 기존 문자열 step
+            logger.debug(f"[Router] 상태/스텝 정보 포함: {step}")
+
+
+        await self.send_callback(message)
+
+    async def send_mic_control(self, mode):
+        """
+        클라이언트의 마이크 상태를 제어합니다. (비동기)
+        """
+        if mode not in ['on', 'off']:
+            return
+
+        logger.info(f"[Router] 마이크 제어 -> {mode.upper()}")
+        await self.send_callback({
+            'type': f'mic.{mode}'
+        })
+
+    async def send_user_confirmed(self, patient_data):
+        """
+        본인 확인이 최종 완료되었음을 클라이언트에 알립니다. (비동기)
+        """
+        logger.info(f"[Router] 사용자 확인 완료 전송: {patient_data.get('patient_name')}")
+        await self.send_callback({
+            'type': 'user.confirmed',
+            'patient': patient_data
+        })
+
+    async def send_confirmation_failed(self):
+        """
+        본인 확인 실패를 클라이언트에 알립니다. (비동기)
+        """
+        logger.warning(f"[Router] 사용자 확인 실패 전송")
+        await self.send_callback({
+            'type': 'user.confirmation_failed'
+        })
+
+    # 📌 send_stt_to_input 콜백 제거: state_manager v3에서 직접 step 정보로 전달
+    # async def send_stt_to_input(self, text): ...
+
+    async def send_error_message(self, error_text):
+        """
+        클라이언트에 오류 메시지를 전송합니다. (비동기)
+        """
+        logger.error(f"[Router] 클라이언트 오류 전송: {error_text}")
+        await self.send_callback({
+            'type': 'error',
+            'message': error_text
+        })
+
+    async def cleanup(self):
+        """
+        WebSocket 연결 종료 시 StateManager 정리 (비동기)
+        """
+        # 📌 state_manager가 None이 아닐 경우에만 cleanup 호출
+        if self.state_manager:
+            await self.state_manager.cleanup()
+            logger.info(f"[Router] 라우터 및 상태 관리자 정리 완료.")
+        else:
+            logger.warning("[Router] StateManager가 초기화되지 않아 cleanup 생략.")

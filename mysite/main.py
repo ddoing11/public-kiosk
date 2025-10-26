@@ -7,7 +7,7 @@ import django
 os.environ.setdefault("DJANGO_SETTINGS_MODULE", "mysite.settings")
 django.setup()
 
-from hospital_kiosk.websocket_server import start_hospital_server
+from mysite.websocket_server import start_hospital_server
 
 def main():
     print("병원 서류 발급 키오스크 시스템")

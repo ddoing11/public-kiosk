@@ -6,19 +6,10 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>병원 서류 출력 서비스</title>
 
-  <!-- ✅ CSS / JS 파일 직접 연결 -->
-  <!-- ✅ CSS와 JS를 절대경로로 지정 -->
   <link rel="stylesheet" href="/static/css/kiosk.css">
   <script type="module" src="/static/js/voice_socket_main.js"></script>
 </head>
 <body>
-  ...
-</body>
-</html>
-
-
-<body>
-    <!-- Header -->
     <header class="header">
         <div class="header-content">
             <div class="header-title">
@@ -32,7 +23,9 @@
         </div>
     </header>
 
-    <!-- 음성 인식 상태 표시 -->
+    <div class="status-section" style="text-align: center; padding: 10px; background-color: #f0f0f0; margin-bottom: 15px;">
+        <p id="status-bar">상태 메시지 로딩 중...</p>
+    </div>
     <div class="voice-control-section">
         <div class="voice-control-container">
             <button id="voiceToggleBtn" class="voice-toggle-btn">
@@ -51,7 +44,6 @@
         </div>
     </div>
 
-    <!-- 음성 피드백 영역 -->
     <div id="voiceFeedback" class="voice-feedback hidden">
         <div class="voice-feedback-content">
             <div class="voice-indicator">
@@ -67,10 +59,8 @@
         </div>
     </div>
 
-     <!-- 메인 콘텐츠 -->
-  <main class="main-content">
+     <main class="main-content">
     <div class="content-box">
-      <!-- 안내 -->
       <div class="content-header">
         <div class="check-icon-wrapper">
           <svg class="check-icon" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -82,7 +72,6 @@
       </div>
 
 
-      <!-- 입력 영역 -->
       <form id="birthForm" method="POST" action="/kiosk/main/">
         {% csrf_token %}
         <div class="id-input-section">
@@ -100,15 +89,13 @@
             </div>
           </div>
 
-          <!-- 진행 상태 바 -->
           <div class="progress-container">
             <div class="progress-bar">
               <div id="progressFill" class="progress-fill"></div>
             </div>
           </div>
 
-           <!-- 숫자 키패드 (화면 중앙 정렬용 래퍼) -->
-          <div class="number-pad-wrapper">
+           <div class="number-pad-wrapper">
             <div class="number-pad">
               <button type="button" class="number-btn" data-number="1">1</button>
               <button type="button" class="number-btn" data-number="2">2</button>
@@ -130,7 +117,6 @@
             </div>
           </div>
 
-          <!-- 버튼 영역 -->
           <div class="action-buttons">
             <button type="reset" id="resetBtn" class="reset-btn">다시 입력</button>
             <button type="submit" id="birthSubmitBtn" class="search-btn">1차 검색</button>
@@ -140,7 +126,6 @@
     </div>
   </main>
 
-    <!-- Footer -->
     <footer class="footer">
         <div class="footer-content">
             <div class="footer-item">
@@ -173,7 +158,6 @@
         </div>
     </footer>
 
-    <!-- ✅ 기존 JS 그대로 유지 -->
     <script type="module" src="/static/js/voice_socket_main.js"></script>
 </body>
 </html>

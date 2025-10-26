@@ -56,91 +56,84 @@ def normalize_date_input(text: str) -> str:
     print(f"❌ 날짜 변환 실패, 원본 반환: '{text}'")
     return text
 
-
-def print_document(scope, doc_type, issue_date, print_queue_name): 
+def find_document_path(doc_type, issue_date):
     """
-    실제 문서를 인쇄하고 인쇄 시작 TTS를 전송합니다.
+    주어진 문서 종류(doc_type)와 날짜(issue_date)에 맞는 파일 경로를 찾아 반환.
+    폴더 구조:
+        documents/Medical_Certificate_DOC/
+        documents/Medical_receipt_DOC/
+    파일명 예시:
+        010215-3456789_certificate_20241027.pdf
+        010203-3456789_receipt_20250716.pdf
     """
-    # 📌 scope에서 patient_id를 추출합니다.
-    patient_id = scope["session"].get("selected_patient", {}).get("patient_id", "")
-    base_dir = settings.BASE_DIR
-    
-    # ★★★ 수정됨: doc_type 문자열 앞뒤 공백 제거 ★★★
-    doc_type = doc_type.strip() 
-    
-    # SumatraPDF 경로 설정 (하드코딩 대신 os.path.join 사용 권장)
-    sumatra_path = os.path.join(base_dir, 'sumatra', 'SumatraPDF-3.5.2-64.exe')
-    
-    found_file = None
-    
-    # 1. TTS 출력 시작 알림 (수정: 이모지 제거)
-    logger.info(f"[발급요청] {doc_type} ({issue_date}) using SumatraPDF (Queue: {print_queue_name})") 
-    
-    # Send INITIAL TTS: "발급을 시작합니다."
-    async_to_sync(scope["consumer"].send_tts)(f"{doc_type} 발급을 시작합니다.", voice_mode='busy_printing')
+    base_dir = os.path.join(settings.BASE_DIR, "documents")
 
-    # --- 2. 파일 찾기 로직 (patient_id와 issue_date 사용) ---
-    folder_map = {
-        "진료확인서": "Medical_Certificate_DOC", "처방전": "Prescription_DOC", "진료영수증": "Medical_receipt_DOC",
-    }
-    folder_name = folder_map.get(doc_type)
-
-    if "Certificate" in folder_name: prefix = "certificate"
-    elif "receipt" in folder_name: prefix = "receipt"
-    elif "Prescription" in folder_name: prefix = "prescription"
-    else: prefix = "document"
-
-    doc_folder = os.path.join(settings.BASE_DIR, "documents", folder_name)
-    patient_formats = [ patient_id, patient_id.replace('-', '') ]
-
-    # issue_date는 YYYY-MM-DD 형태라고 가정하고 YYYYMMDD로 변환합니다.
-    try:
-         date_part = datetime.strptime(issue_date, '%Y-%m-%d').strftime('%Y%m%d')
-    except ValueError:
-         logger.error("날짜 형식 오류로 파일 검색 실패")
-         return False
-
-    for patient_fmt in patient_formats:
-        search_pattern = f"{patient_fmt}_{prefix}_{date_part}.pdf"
-        file_path = os.path.join(doc_folder, search_pattern)
-        
-        logger.info(f"📂 시도: {file_path}")
-        if os.path.exists(file_path):
-            found_file = file_path
-            logger.info(f"파일 발견: {file_path}")
-            break
-
-    if not found_file:
-        logger.error(f"모든 패턴에서 파일 찾기 실패")
-        return False
-        
-    
-    # 3. 프린터 명령 실행
-    if os.path.exists(sumatra_path):
-        command = [
-            sumatra_path, 
-            "-print-to",
-            print_queue_name, # ★★★ 4번째 인자 사용 ★★★
-            found_file
-        ]
-
-        logger.info(f"SumatraPDF CLI 명령 실행 (Run): {command}") 
-
-        # 4. 실제 프린터 명령 실행 (subprocess.run)은 주석 처리
-        # subprocess.run(command, check=True, capture_output=True) 
-        
-        # 5. 최종 성공 로깅 (수정: 이모지 제거)
-        logger.info(f"프린트 명령 전송 완료 (SumatraPDF 종료 확인): {found_file} -> {print_queue_name}") 
-        return True 
+    # ✅ 문서 종류에 따라 하위 폴더 경로 결정
+    if "확인서" in doc_type or "certificate" in doc_type:
+        target_dir = os.path.join(base_dir, "Medical_Certificate_DOC")
+        keyword = "certificate"
+    elif "영수증" in doc_type or "receipt" in doc_type:
+        target_dir = os.path.join(base_dir, "Medical_receipt_DOC")
+        keyword = "receipt"
     else:
-        logger.error(f"❌ SumatraPDF 실행 파일을 찾을 수 없습니다. (경로: {sumatra_path})")
-        return False
+        return None  # 알 수 없는 문서 유형
+
+    # 해당 폴더가 존재하지 않으면 종료
+    if not os.path.exists(target_dir):
+        return None
+
+    # ✅ 파일명에 날짜가 포함된 PDF 탐색
+    for file in os.listdir(target_dir):
+        if file.endswith(".pdf") and keyword in file and issue_date.replace("-", "") in file:
+            return os.path.join(target_dir, file)
+
+    # 파일을 찾지 못한 경우
+    return None
+
+
+def print_document(scope, doc_type, issue_date, print_queue_name=None):
+    if not print_queue_name:
+        logger.info("[프린터] print_queue_name이 None → 기본 프린터로 설정됨")
+
+    logger.info(f"[발급요청] {doc_type} ({issue_date}) (Queue: {print_queue_name or 'Default printer'})")
+
+    found_file = find_document_path(doc_type, issue_date)
+    if not found_file:
+        logger.warning(f"[경고] 파일을 찾을 수 없음: {doc_type}, {issue_date}")
+        return ("not_found", None)
+
+    # ✅ SumatraPDF 실행 파일 경로 수정 (프로젝트 내부 경로 사용)
+    sumatra_path = os.path.join(settings.BASE_DIR, "sumatra", "SumatraPDF-3.5.2-64.exe")
+
+    if os.path.exists(sumatra_path):
+        if print_queue_name:
+            os.system(f'"{sumatra_path}" -print-to "{print_queue_name}" "{found_file}"')
+        else:
+            # ✅ 기본 프린터로 출력
+            subprocess.run([sumatra_path, "-print-to-default", found_file], check=True)
+
+        logger.info(f"프린트 명령 전송 완료: {found_file} → {print_queue_name or '기본 프린터'}")
+        return ("success", found_file)
+    else:
+        logger.error(f"SumatraPDF 실행 파일 없음: {sumatra_path}")
+        return ("print_failed", None)
+
 
 class KioskWebSocketConsumer(AsyncWebsocketConsumer):
     # --- (KioskWebSocketConsumer 코드는 이전과 동일하게 유지) ---
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.client_state = {}
+
+    async def send_tts(self, text):
+        """
+        프론트엔드로 TTS 텍스트를 전송하는 헬퍼 메서드
+        """
+        await self.send_json({
+            "type": "tts.text",
+            "text": text
+        })
+
 
     async def connect(self):
         await self.accept()
@@ -195,7 +188,7 @@ class KioskWebSocketConsumer(AsyncWebsocketConsumer):
         text = text.strip().lower()
         current_step = self.client_state.get('step', 'idle')
         logger.info(f"STT Result: '{text}', State: '{current_step}'")
-
+        
         if current_step == 'confirming_user':
             if any(word in text for word in ['본인', '확인', '맞', '네', '예']):
                 patient = self.client_state.get('patient_to_confirm')

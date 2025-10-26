@@ -375,8 +375,17 @@ function handleMessage(data) {
       break;
 
     case 'status':
+      console.log('📡 수신된 상태 데이터:', JSON.stringify(data)); // 👈 정확히 어떤 문자열인지 확인
       updateStatus('📡 ' + data.state);
       updateUIBasedOnState(data.state);
+
+      const stateValue = (data.state || '').trim().toLowerCase();
+      console.log('🧩 상태 문자열 after normalize:', stateValue);
+
+      if ((data.state || '').trim().toLowerCase() === 'idle') {
+        console.log('🌙 idle 상태 수신 → idle 페이지로 이동');
+        window.location.href = '/kiosk/idle/';  // ✅ 실제 idle 페이지 경로
+      }
       break;
 
     case 'voice.mode':

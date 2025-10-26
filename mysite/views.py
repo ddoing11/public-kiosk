@@ -79,7 +79,12 @@ def speech_token(request):
 def main(request):
     """메인화면 + 주민번호 1차 검색 처리"""
     if request.method == 'POST':
-        birth_number = request.POST.get('birth_number', '')
+        # ★★★ 수정됨: .strip() 추가하여 공백 제거 ★★★
+        birth_number = request.POST.get('birth_number', '').strip() 
+
+        # ★★★ DEBUG 로그 추가: 실제 서버가 받은 값을 확인합니다 ★★★
+        logger.error(f"DEBUG: Received birth_number='{birth_number}', Length={len(birth_number)}, IsDigit={birth_number.isdigit()}") 
+        
         if len(birth_number) == 13 and birth_number.isdigit():
             #받아온 13자리수를 주민번호 규격에 맞게 재구성, 그 후 patients를 검색
             birth_number = f"{birth_number[:6]}-{birth_number[6:]}"
@@ -100,7 +105,8 @@ def main(request):
                 'message': f'{len(filtered_results)}명의 환자가 검색되었습니다.',
             })
         else:
-            return JsonResponse({'success': False, 'message': '올바른 6자리 숫자를 입력해주세요.'})
+            # 📌 오류 메시지를 13자리 요구에 맞게 수정
+            return JsonResponse({'success': False, 'message': '올바른 13자리 주민등록번호를 입력해주세요.'})
 
     return render(request, 'kiosk/main.html')
 
@@ -157,4 +163,3 @@ def search_by_name_view(request):
         
         return JsonResponse({'success': True, 'results': final_results})
     return JsonResponse({'success': False, 'message': '잘못된 요청입니다.'})
-

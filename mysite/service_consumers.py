@@ -307,18 +307,15 @@ class ServiceWebSocketConsumer(AsyncWebsocketConsumer):
                     logger.info(f"날짜 선택 입력 감지: '{text}' → 직접 프린터 처리로 이동") # 이모지 제거
                     
                     # 1. 상태를 'busy_printing'으로 변경하여 10초간 입력 무시 시작
-                    self.client_state.set('step', 'busy_printing') 
+                    self.client_state['step'] = 'busy_printing'
                     await self.send_message('status', {'state': 'busy_printing'}) # UI에게 인쇄 중임을 알림
                     
                     # 2. 프린트 명령 실행 (이 안에서 "발급을 시작합니다" TTS 나감)
-                    success = await self.channel_layer.send(
-                        self.channel_name,
-                        {
-                            "type": "print.document.task",
-                            "doc_type": self.client_state.get("selected_doc_type"),
-                            "issue_date": issue_date_str,
-                            "print_queue_name": self.client_state.get('printer_name')
-                        }
+                    success = await database_sync_to_async(print_document)(
+                        self.scope, 
+                        self.client_state.get("selected_doc_type"), 
+                        issue_date_str, 
+                        self.client_state.get('printer_name')
                     )
                     
                     if success:
@@ -326,14 +323,14 @@ class ServiceWebSocketConsumer(AsyncWebsocketConsumer):
                         await asyncio.sleep(10) # ★★★ 10초 지연 ★★★
 
                         # 4. 최종 TTS 메시지 및 상태 업데이트
-                        await self.send_tts(FINAL_ISSUE_PROMPT, voice_mode='await_additional_issue') 
-                        self.client_state.set('step', 'await_additional_issue')
+                        await self.send_tts_with_tracking(FINAL_ISSUE_PROMPT)
+                        self.client_state['step'] = 'await_additional_issue'
                         await self.send_message('status', {'state': 'listening'}) # 상태 복구
                         
                     else:
                         # 5. 인쇄 실패 시
-                        await self.send_tts(f"발급 중 오류가 발생했습니다. 다시 시도해주세요.", voice_mode='date_selection')
-                        self.client_state.set('step', 'date_selection')
+                        await self.send_tts_with_tracking(f"발급 중 오류가 발생했습니다. 다시 시도해주세요.")
+                        self.client_state['step'] = 'date_selection'
                         await self.send_message('status', {'state': 'listening'}) # 상태 복구
                         
                     return # 처리 완료
@@ -341,7 +338,7 @@ class ServiceWebSocketConsumer(AsyncWebsocketConsumer):
                 else:
                     # 날짜 변환 실패
                     await self.send_tts(f"유효한 날짜를 말씀해주세요.", voice_mode='date_selection')
-                    self.client_state.set('step', 'date_selection')
+                    self.client_state['step'] = 'date_selection'
                     return
             
             # ✅ 추가 발급 요청 단계 처리 (await_additional_issue) - NEW LOGIC
@@ -365,12 +362,12 @@ class ServiceWebSocketConsumer(AsyncWebsocketConsumer):
         if "종료" in text or is_cancel_response(text):
             # 대화 종료
             await self.send_tts("이용해주셔서 감사합니다. 키오스크를 종료합니다.", voice_mode='completed')
-            self.client_state.set('step', 'completed')
+            self.client_state['step'] = 'completed'
             # Optional: Close the websocket
             # await self.close() 
         else: # 서류명 등 다른 입력으로 간주 (발급 요청)
             await self.send_tts("어떤 서류를 발급하시겠습니까? 서류명을 말씀해주세요.", voice_mode='await_document_request')
-            self.client_state.set('step', 'await_document_request')
+            self.client_state['step'] = 'await_document_request'
             
     # ------------- LLM 분류 -------------
     async def analyze_input_with_context(self, text: str) -> dict:

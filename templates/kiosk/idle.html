@@ -1,103 +1,125 @@
 <!DOCTYPE html>
 <html lang="ko">
 <head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>병원 서류 출력 키오스크</title>
-    <style>
-        /* 전체 화면 터치 대기화면 스타일 */
-        body {
-            font-family: Arial, sans-serif;
-            margin: 0;
-            padding: 0;
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-            height: 100vh;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            cursor: pointer;
-            user-select: none;
-        }
-        
-        .idle-container {
-            text-align: center;
-            color: white;
-            animation: pulse 2s infinite;
-        }
-        
-        .idle-container h1 {
-            font-size: 4rem;
-            margin-bottom: 2rem;
-            font-weight: 300;
-        }
-        
-        .idle-container p {
-            font-size: 2rem;
-            margin: 1rem 0;
-            opacity: 0.9;
-        }
-        
-        .touch-icon {
-            font-size: 6rem;
-            margin: 2rem 0;
-            animation: bounce 1.5s infinite;
-        }
-        
-        @keyframes pulse {
-            0% { opacity: 0.8; }
-            50% { opacity: 1; }
-            100% { opacity: 0.8; }
-        }
-        
-        @keyframes bounce {
-            0%, 20%, 50%, 80%, 100% { transform: translateY(0); }
-            40% { transform: translateY(-20px); }
-            60% { transform: translateY(-10px); }
-        }
-        
-        .version-info {
-            position: absolute;
-            bottom: 20px;
-            right: 20px;
-            color: rgba(255,255,255,0.6);
-            font-size: 0.9rem;
-        }
-    </style>
-</head>
-<body id="idle-screen">
-    <div class="idle-container">
-        <h1>병원 서류 출력 키오스크</h1>
-        <div class="touch-icon">👆</div>
-        <p>화면을 터치해주세요</p>
-        <p style="font-size: 1.5rem; opacity: 0.7;">Touch anywhere to start</p>
-    </div>
-    
-    <div class="version-info">
-        Phase 1.1 Backend
-    </div>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>진료확인서·처방전·영수증을 한 번에!</title>
 
-    <script>
-        // 전체 화면 터치 감지
-        document.getElementById('idle-screen').addEventListener('click', function() {
-            console.log('🖱️ 대기화면 터치됨 → 메인화면으로 이동');
-            
-            // 메인화면으로 이동
-            window.location.href = '/kiosk/main/';
-        });
-        
-        // 키보드 입력 감지 (접근성)
-        document.addEventListener('keydown', function(e) {
-            if (e.key === 'Enter' || e.key === ' ') {
-                window.location.href = '/kiosk/main/';
-            }
-        });
-        
-        // 화면 전환 효과
-        document.body.addEventListener('click', function() {
-            document.body.style.transition = 'opacity 0.3s ease';
-            document.body.style.opacity = '0.7';
-        });
-    </script>
+  <style>
+    :root {
+      --bg-start: #667eea;   /* 기존 코드의 파랑 */
+      --bg-end: #764ba2;     /* 기존 코드의 보라 */
+      --fg: #ffffff;
+      --accent: #2dd4bf;
+      --muted: #f0f0f0;
+    }
+
+
+    body {
+      margin: 0;
+      padding: 0;
+      background: linear-gradient(135deg, var(--bg-start) 0%, var(--bg-end) 100%);
+      height: 100vh;
+      display: flex;
+      flex-direction: column;
+      justify-content: center;
+      align-items: center;
+      font-family: 'Noto Sans KR', system-ui, sans-serif;
+      color: var(--fg);
+      text-align: center;
+      cursor: pointer;
+      user-select: none;
+      transition: background 0.4s ease;
+    }
+
+    
+
+    .idle-container {
+      animation: fadeIn 1.2s ease-in;
+    }
+
+    .idle-container h1 {
+      font-size: 4.5rem;
+      font-weight: 800;
+      letter-spacing: -1px;
+      text-shadow: 0 0 20px rgba(255, 255, 255, 0.2);
+      margin-bottom: 2rem;
+    }
+
+    .touch-icon {
+      font-size: 6rem;
+      margin: 1.5rem 0;
+      animation: bounce 1.5s infinite ease-in-out;
+    }
+
+    .idle-container p {
+      font-size: 2rem;
+      color: var(--accent);
+      animation: blink 1.6s infinite;
+      font-weight: 600;
+    }
+
+    .sub-text {
+      font-size: 1.4rem;
+      color: var(--muted);
+      margin-top: 0.5rem;
+    }
+
+    .version-info {
+      position: absolute;
+      bottom: 20px;
+      right: 20px;
+      color: rgba(255, 255, 255, 0.4);
+      font-size: 0.9rem;
+    }
+
+    @keyframes fadeIn {
+      0% { opacity: 0; transform: translateY(10px); }
+      100% { opacity: 1; transform: translateY(0); }
+    }
+
+    @keyframes bounce {
+      0%, 20%, 50%, 80%, 100% { transform: translateY(0); }
+      40% { transform: translateY(-25px); }
+      60% { transform: translateY(-10px); }
+    }
+
+    @keyframes blink {
+      0%, 50%, 100% { opacity: 1; }
+      25%, 75% { opacity: 0.4; }
+    }
+  </style>
+</head>
+
+<body id="idle-screen" role="button" aria-label="화면을 터치하여 시작하세요">
+ <!-- 상단 팀명 -->
+  <div class="team-name">AEPSK</div>
+
+  <div class="idle-container">
+    <h1>필요한 병원 서류를 쉽고 빠르게</h1>
+    <div class="touch-icon">👆</div>
+    <p>화면을 터치하여 시작하세요</p>
+    <div class="sub-text">진료 후 서류를 직접 출력하실 수 있습니다.</div>
+  </div>
+
+  <div class="version-info">Phase 1.2 Frontend</div>
+
+  <script>
+    const idleScreen = document.getElementById('idle-screen');
+
+    idleScreen.addEventListener('click', () => {
+      console.log('🖱️ 대기화면 터치됨 → 메인화면으로 이동');
+      document.body.style.transition = 'opacity 0.5s ease';
+      document.body.style.opacity = '0';
+      setTimeout(() => window.location.href = '/kiosk/main/', 300);
+    });
+
+    document.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter' || e.key === ' ') {
+        window.location.href = '/kiosk/main/';
+      }
+    });
+  </script>
 </body>
 </html>
 
@@ -108,3 +130,5 @@
 - WebSocket 연결 없음 (메인화면에서만)
 - 시각적 효과로 사용자 유도
 -->
+
+<!-- idle front 수정 진행 _ 윤정-->

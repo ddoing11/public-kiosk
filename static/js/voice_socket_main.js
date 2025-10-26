@@ -155,8 +155,12 @@ function isConfirmUtterance(text) {
 /* ==============================
  * 마이크 및 음성 인식 (안정성 강화)
  * ============================== */
+/* ==============================
+ * 마이크 및 음성 인식 (안정성 강화)
+ * ============================== */
 function activateMicrophone() {
   console.log('🎤 activateMicrophone 호출 - microphoneEnabled:', microphoneEnabled, 'ttsPlaying:', ttsPlaying);
+  
   if (!microphoneEnabled) {
     console.log('🔇 마이크 활성화 무시 - microphoneEnabled=false');
     return;
@@ -165,25 +169,19 @@ function activateMicrophone() {
     console.log('🔇 마이크 활성화 무시 - TTS 재생 중');
     return;
   }
-  if (isWithinCooldown()) {
-    const wait = TTS_COOLDOWN_MS - (Date.now() - lastTTSEndAt) + 120;
-    console.log(`⏳ TTS 쿨다운 대기 후 마이크 활성화: ${wait}ms`);
-    setTimeout(() => {
-      if (microphoneEnabled && !ttsPlaying && !currentRecognition) startSpeechRecognition();
-    }, wait);
-    return;
-  }
-
+  
+  // ★★★ 쿨다운 로직을 startSpeechRecognition으로 위임하여 중복 방지 ★★★
+  
   console.log('✅ 마이크 활성화 진행');
   const micIndicator = document.getElementById('mic-indicator');
-  if (micIndicator) micIndicator.classList.add('active');
+  if (micIndicator) micIndicator.classList.add('active'); // 아이콘 ON
   startSpeechRecognition();
 }
 
 function deactivateMicrophone() {
   console.log('🔇 deactivateMicrophone 호출');
   const micIndicator = document.getElementById('mic-indicator');
-  if (micIndicator) micIndicator.classList.remove('active');
+  if (micIndicator) micIndicator.classList.remove('active'); // 아이콘 OFF
   stopSpeechRecognition();
 }
 
@@ -196,11 +194,14 @@ function startSpeechRecognition() {
     console.log('🔇 음성 인식 시작 불가 - currentRecognition:', !!currentRecognition, 'microphoneEnabled:', microphoneEnabled, 'ttsPlaying:', ttsPlaying);
     return;
   }
+  
+  // ★★★ 쿨다운 확인 후 시작하도록 로직 변경 ★★★
   if (isWithinCooldown()) {
-    console.log('⏳ 쿨다운으로 음성 인식 지연');
+    const wait = TTS_COOLDOWN_MS - (Date.now() - lastTTSEndAt) + 100;
+    console.log(`⏳ 쿨다운 대기 후 음성 인식 시작: ${wait}ms`);
     setTimeout(() => {
       if (!currentRecognition && microphoneEnabled && !ttsPlaying) startSpeechRecognition();
-    }, TTS_COOLDOWN_MS);
+    }, wait);
     return;
   }
 
@@ -229,9 +230,19 @@ function startSpeechRecognition() {
 
       if (pass) {
         console.log('✅ 본인확인 통과 발화로 판단 → 서버 전송 & recognition.stop()');
-        // ★★★ 추가된 로직: 프론트에서 직접 처리 ★★★
+        
+        // ★★★ 수정된 로직: 프론트에서 즉시 처리 (음성 응답에 대한 응답) ★★★
+        if (normalize(result).includes(normalize('취소'))) {
+             // "취소"라고 말한 경우
+             hideNameConfirmationPopup();
+             updateStatus('취소되었습니다. 주민번호를 다시 입력해주세요.');
+             clientState = 'listening'; // 상태를 초기화하여 재입력을 받습니다.
+             activateMicrophone();
+             return;
+        }
+        
         if (isConfirmUtterance(result)) {
-            // "네", "맞아요" 라고 말한 경우
+            // "네", "맞아요", "본인확인"이라고 말한 경우
             selectPatient(window.confirmedPatientData);
             hideNameConfirmationPopup(); // 팝업 숨기기
             return;
@@ -287,7 +298,8 @@ function startSpeechRecognition() {
     currentRecognition = null;
     const micIndicator = document.getElementById('mic-indicator');
     if (micIndicator && micIndicator.classList.contains('active') && microphoneEnabled && !ttsPlaying) {
-      setTimeout(startSpeechRecognition, 500);
+      // ★★★ 음성 인식 종료 후 재시작 시 쿨다운을 따르도록 activateMicrophone() 호출 ★★★
+      setTimeout(activateMicrophone, 500); // 500ms 후 activateMicrophone이 쿨다운 로직 실행
     }
   };
 
@@ -374,7 +386,8 @@ function handleWebSocketMessage(data) {
           console.log('🔊 상태 업데이트 - ttsPlaying:', ttsPlaying, 'microphoneEnabled:', microphoneEnabled);
 
           if (microphoneEnabled && !ttsPlaying) {
-            activateMicrophone();
+             // activateMicrophone() 함수가 쿨다운을 자체적으로 처리하도록 위임합니다.
+             activateMicrophone(); 
           } else {
             console.warn('🚫 마이크 재활성화 실패 - 상태 불일치');
           }

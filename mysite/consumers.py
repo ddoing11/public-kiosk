@@ -4,6 +4,7 @@ import logging
 from channels.generic.websocket import AsyncWebsocketConsumer
 from django.conf import settings
 from openai import OpenAI
+from asgiref.sync import async_to_sync
 from channels.db import database_sync_to_async
 from datetime import date, datetime
 from .models import Medical_Certificate, Prescription, MedicalReceipt
@@ -56,14 +57,16 @@ def normalize_date_input(text: str) -> str:
     return text
 
 
-def print_document(scope, doc_type, issue_date, print_queue_name):    
+def print_document(scope, doc_type, issue_date, print_queue_name): 
     """
     실제 문서를 인쇄하고 인쇄 시작 TTS를 전송합니다.
     """
-    # 📌 service_consumers에서 patient_id가 아닌 scope를 첫 번째 인자로 전달받고 있으므로,
-    #    scope에서 patient_id를 추출합니다.
+    # 📌 scope에서 patient_id를 추출합니다.
     patient_id = scope["session"].get("selected_patient", {}).get("patient_id", "")
     base_dir = settings.BASE_DIR
+    
+    # ★★★ 수정됨: doc_type 문자열 앞뒤 공백 제거 ★★★
+    doc_type = doc_type.strip() 
     
     # SumatraPDF 경로 설정 (하드코딩 대신 os.path.join 사용 권장)
     sumatra_path = os.path.join(base_dir, 'sumatra', 'SumatraPDF-3.5.2-64.exe')
@@ -81,9 +84,6 @@ def print_document(scope, doc_type, issue_date, print_queue_name):
         "진료확인서": "Medical_Certificate_DOC", "처방전": "Prescription_DOC", "진료영수증": "Medical_receipt_DOC",
     }
     folder_name = folder_map.get(doc_type)
-    if not folder_name: 
-        logger.error(f"지원되지 않는 문서 유형: {doc_type}")
-        return False
 
     if "Certificate" in folder_name: prefix = "certificate"
     elif "receipt" in folder_name: prefix = "receipt"

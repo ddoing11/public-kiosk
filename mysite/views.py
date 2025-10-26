@@ -79,16 +79,17 @@ def speech_token(request):
 def main(request):
     """메인화면 + 주민번호 1차 검색 처리"""
     if request.method == 'POST':
-        # ★★★ 수정됨: .strip() 추가하여 공백 제거 ★★★
-        birth_number = request.POST.get('birth_number', '').strip() 
-
-        # ★★★ DEBUG 로그 추가: 실제 서버가 받은 값을 확인합니다 ★★★
-        logger.error(f"DEBUG: Received birth_number='{birth_number}', Length={len(birth_number)}, IsDigit={birth_number.isdigit()}") 
+        birth_number = request.POST.get('birth_number', '').strip()
+        
+        # DEBUG 로그
+        logger.error(f"DEBUG: Received birth_number='{birth_number}', Length={len(birth_number)}, IsDigit={birth_number.isdigit()}")
         
         if len(birth_number) == 13 and birth_number.isdigit():
-            #받아온 13자리수를 주민번호 규격에 맞게 재구성, 그 후 patients를 검색
-            birth_number = f"{birth_number[:6]}-{birth_number[6:]}"
-            patients = PatientList.objects.filter(patient_id__startswith=birth_number)
+            # 13자리수를 주민번호 규격에 맞게 재구성
+            full_patient_id = f"{birth_number[:6]}-{birth_number[6:]}"
+            
+            # DB 조회: 주민번호 전체가 일치하는 환자 검색
+            patients = PatientList.objects.filter(patient_id=full_patient_id) 
 
             # 검색 결과를 세션에 저장하기 위해 직렬화
             filtered_results = [
@@ -98,14 +99,28 @@ def main(request):
                     'contact': p.contact
                 } for p in patients
             ]
+            
             request.session['filtered_patients'] = filtered_results
 
+            # ★★★ 수정된 로직: 1명일 경우 바로 확인 요청 데이터 반환 ★★★
+            if len(filtered_results) == 1:
+                 patient = filtered_results[0]
+                 return JsonResponse({
+                    'success': True,
+                    'confirmation_needed': True, # 확인 필요 플래그
+                    'patient_name': patient['patient_name'],
+                    'patient_data': patient # 모든 환자 정보
+                 })
+
+            # 0명 또는 다수일 경우
             return JsonResponse({
                 'success': True,
                 'message': f'{len(filtered_results)}명의 환자가 검색되었습니다.',
+                'confirmation_needed': False,
+                'results_count': len(filtered_results)
             })
         else:
-            # 📌 오류 메시지를 13자리 요구에 맞게 수정
+            # 13자리가 아니면 오류 메시지 반환
             return JsonResponse({'success': False, 'message': '올바른 13자리 주민등록번호를 입력해주세요.'})
 
     return render(request, 'kiosk/main.html')
@@ -148,8 +163,6 @@ def search_by_name_view(request):
             return JsonResponse({'success': False, 'message': '이름을 입력해주세요.'})
         
         # 이름으로 2차 필터링
-        final_results = [p for p in filtered_patients if name in p['patient_name']]
-
         final_results = [p for p in filtered_patients if name in p['patient_name']]
 
         # [수정된 부분 시작]

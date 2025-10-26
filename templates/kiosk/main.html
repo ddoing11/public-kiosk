@@ -8,7 +8,7 @@
 
   <link rel="stylesheet" href="/static/css/kiosk.css">
   <script type="module" src="/static/js/voice_socket_main.js"></script>
-</head>
+  </head>
 <body>
     <header class="header">
         <div class="header-content">
@@ -26,6 +26,7 @@
     <div class="status-section" style="text-align: center; padding: 10px; background-color: #f0f0f0; margin-bottom: 15px;">
         <p id="status-bar">상태 메시지 로딩 중...</p>
     </div>
+
     <div class="voice-control-section">
         <div class="voice-control-container">
             <button id="voiceToggleBtn" class="voice-toggle-btn">
@@ -157,6 +158,19 @@
             </div>
         </div>
     </footer>
+
+    <div id="confirmationModal" class="modal">
+        <div class="modal-content">
+            <span class="close-btn">&times;</span>
+            <h2 id="modalTitle">본인 확인이 필요합니다</h2>
+            <p id="confirmationText" style="font-size: 1.5rem; margin-top: 20px; margin-bottom: 30px;">OOO 님이 맞으신가요?</p>
+            <div class="modal-actions">
+                <button class="modal-btn confirm-btn">본인 확인</button>
+                <button class="modal-btn cancel-btn">취소</button>
+            </div>
+            <p class="voice-instruction" style="color: gray; font-size: 1.1rem; margin-top: 15px;">"본인확인" 또는 "취소"라고 말씀해주세요.</p>
+        </div>
+    </div>
 
     <script type="module" src="/static/js/voice_socket_main.js"></script>
 </body>

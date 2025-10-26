@@ -6,7 +6,7 @@
 // - 초기화/재연결/에러 로그 강화
 
 import { speakOnClient } from './modules/azure-tts.js';
-import { updateStatus, displayResults } from './modules/ui-main.js';
+import { updateStatus, displayResults, showNameConfirmationPopup, hideNameConfirmationPopup } from './modules/ui-main.js';
 
 /* ==============================
  * 전역 변수 및 상태
@@ -16,7 +16,7 @@ let currentRecognition = null;
 let clientState = 'listening'; // 'listening' | 'confirming_user' 등
 let lastSpokenTTS = "";        // 마지막으로 재생된 TTS 문장
 let microphoneEnabled = true;  // 마이크 활성화 상태
-let ttsPlaying = false;        // TTS 재생 상태
+let ttsPlaying = false;        // TTS 재생 상태       // TTS 재생 상태
 
 // 에코/쿨다운 방지용
 let lastTTSEndAt = 0;                 // 마지막 TTS 종료 시각(ms)
@@ -31,6 +31,8 @@ const ECHO_SIM_THRESHOLD = 0.78;      // 에코 판정 유사도 기준
 // 본인 확인 대상 이름(서버가 안내 TTS에서 말해준 이름을 파싱해 저장)
 let confirmTargetName = null;         // 예: "이서준"
 let confirmTargetNameNorm = null;     // 예: "이서준" (정규화본)
+
+window.confirmedPatientData = null; // 임시로 전체 환자 데이터를 저장할 변수
 
 /* ==============================
  * 유틸 함수
@@ -227,6 +229,14 @@ function startSpeechRecognition() {
 
       if (pass) {
         console.log('✅ 본인확인 통과 발화로 판단 → 서버 전송 & recognition.stop()');
+        // ★★★ 추가된 로직: 프론트에서 직접 처리 ★★★
+        if (isConfirmUtterance(result)) {
+            // "네", "맞아요" 라고 말한 경우
+            selectPatient(window.confirmedPatientData);
+            hideNameConfirmationPopup(); // 팝업 숨기기
+            return;
+        }
+
         if (websocket && websocket.readyState === WebSocket.OPEN) {
           websocket.send(JSON.stringify({ type: 'stt.result', text: result }));
         }
@@ -256,10 +266,11 @@ function startSpeechRecognition() {
     }
 
     // 이름 입력 단계: 이름 형태만 통과
-    if (isNameStageActive() && !isLikelyName(result)) {
-      console.warn('이름 단계에서 이름으로 보이지 않아 무시:', result);
-      return;
-    }
+    // ★★★ 기존 이름 입력 단계 로직은 이제 사용되지 않음 ★★★
+    // if (isNameStageActive() && !isLikelyName(result)) {
+    //   console.warn('이름 단계에서 이름으로 보이지 않아 무시:', result);
+    //   return;
+    // }
 
     if (result && websocket && websocket.readyState === WebSocket.OPEN) {
       websocket.send(JSON.stringify({ type: 'stt.result', text: result }));
@@ -405,26 +416,26 @@ function handleWebSocketMessage(data) {
       break;
 
     case 'stt.forward_to_input': {
-      // 서버 지시에도 로컬에서 2차 필터(에코/이름형태) 후 반영
-      const text = (data.text || '').trim();
-      const nameSearchSection = document.getElementById('nameSearchSection');
-      if (nameSearchSection && window.getComputedStyle(nameSearchSection).display !== 'none') {
-        if (isLikelyEcho(text)) {
-          console.warn('서버 forward 텍스트가 에코로 의심되어 입력란 반영 생략:', text);
-          return;
-        }
-        if (!isLikelyName(text)) {
-          console.warn('서버 forward 텍스트가 이름 형태가 아니라 반영 생략:', text);
-          return;
-        }
-        const nameInput = document.getElementById('nameInput');
-        if (nameInput) {
-          nameInput.value = text;
-          updateStatus(`음성으로 이름 "${text}" 입력됨`);
-          const nameSearchBtn = document.getElementById('nameSearchBtn');
-          if (nameSearchBtn) nameSearchBtn.click();
-        }
-      }
+      // ★★★ 기존 이름 입력 섹션이므로 사용 안 함 (주석 처리) ★★★
+      // const text = (data.text || '').trim();
+      // const nameSearchSection = document.getElementById('nameSearchSection');
+      // if (nameSearchSection && window.getComputedStyle(nameSearchSection).display !== 'none') {
+      //   if (isLikelyEcho(text)) {
+      //     console.warn('서버 forward 텍스트가 에코로 의심되어 입력란 반영 생략:', text);
+      //     return;
+      //   }
+      //   if (!isLikelyName(text)) {
+      //     console.warn('서버 forward 텍스트가 이름 형태가 아니라 반영 생략:', text);
+      //     return;
+      //   }
+      //   const nameInput = document.getElementById('nameInput');
+      //   if (nameInput) {
+      //     nameInput.value = text;
+      //     updateStatus(`음성으로 이름 "${text}" 입력됨`);
+      //     const nameSearchBtn = document.getElementById('nameSearchBtn');
+      //     if (nameSearchBtn) nameSearchBtn.click();
+      //   }
+      // }
       break;
     }
 
@@ -433,9 +444,10 @@ function handleWebSocketMessage(data) {
       break;
 
     case 'user.confirmation_failed': {
+      // ★★★ 본인 확인 팝업 숨기기 추가 ★★★
+      hideNameConfirmationPopup();
       updateStatus('인증에 실패했습니다. 이름을 다시 말씀해주세요.');
-      const nameInput = document.getElementById('nameInput');
-      if (nameInput) nameInput.focus();
+      // 이름 입력 섹션 대신 주민번호 입력 섹션 유지 (UI는 초기 상태)
       break;
     }
 
@@ -465,12 +477,11 @@ function handleWebSocketMessage(data) {
  * ============================== */
 function setupAuthEventListeners() {
   const birthForm = document.getElementById('birthForm');
-  const digitInputs = document.querySelectorAll('.birth-digit');
-  const birthSubmitBtn = document.getElementById('birthSubmitBtn');
-  const nameSearchSection = document.getElementById('nameSearchSection');
-  const nameInput = document.getElementById('nameInput');
-  const nameSearchBtn = document.getElementById('nameSearchBtn');
-  const successMessage = document.getElementById('birthSuccessMessage');
+  const digitInputs = document.querySelectorAll('.id-digit');
+  const nameSearchSection = document.getElementById('nameSearchSection'); // 이 섹션은 이제 사용하지 않음
+  const nameInput = document.getElementById('nameInput'); // 이 섹션은 이제 사용하지 않음
+  const nameSearchBtn = document.getElementById('nameSearchBtn'); // 이 섹션은 이제 사용하지 않음
+  const successMessage = document.getElementById('birthSuccessMessage'); // 이 섹션은 이제 사용하지 않음
 
   if (digitInputs.length > 0) {
     digitInputs.forEach((input, index) => {
@@ -478,7 +489,7 @@ function setupAuthEventListeners() {
         if (input.value.length === 1 && index < digitInputs.length - 1) {
           digitInputs[index + 1].focus();
         }
-        checkBirthFormValidity();
+        checkBirthFormValidity(); // 이 함수는 main.html에 없으므로 오류가 날 수 있습니다.
       });
       input.addEventListener('keydown', (e) => {
         if (e.key === 'Backspace' && input.value === '' && index > 0) {
@@ -488,16 +499,20 @@ function setupAuthEventListeners() {
     });
   }
 
+  // ★★★ checkBirthFormValidity 함수는 main.html에 종속적이므로 제거 또는 수정 필요 ★★★
   function checkBirthFormValidity() {
+    const birthSubmitBtn = document.getElementById('birthSubmitBtn');
     if (birthSubmitBtn && digitInputs.length > 0) {
       const allFilled = Array.from(digitInputs).every(input => input.value.match(/^[0-9]$/));
       birthSubmitBtn.disabled = !allFilled;
     }
   }
 
+
   if (birthForm) {
     birthForm.addEventListener('submit', function (e) {
-      e.preventDefault();
+      e.preventDefault(); // ★★★ 추가됨: 폼의 기본 제출 동작을 막습니다. ★★★
+      
       const birthNumber = Array.from(digitInputs).map(input => input.value).join('');
       const csrfToken = birthForm.querySelector('[name=csrfmiddlewaretoken]')?.value;
 
@@ -508,36 +523,46 @@ function setupAuthEventListeners() {
 
       fetch('/kiosk/main/', {
         method: 'POST',
-        body: new URLSearchParams(formData)
+        // 📌 Content-Type은 FormData 사용 시 브라우저가 자동으로 설정하지만, URLSearchParams 사용을 위해 변경
+        body: new URLSearchParams(formData) 
       })
         .then(res => res.json())
         .then(data => {
           if (data.success) {
-            updateStatus('✅ 1차 인증 완료. 이름을 입력해주세요.');
-            if (successMessage) successMessage.textContent = data.message;
-            if (nameSearchSection) nameSearchSection.style.display = 'block';
-            if (nameInput) nameInput.focus();
+            // ★★★ 수정된 로직: 1명일 경우 바로 본인 확인 팝업/TTS로 이동 ★★★
+            if (data.confirmation_needed) { // views.py에서 설정한 플래그
+                const patientName = data.patient_name;
+                
+                // 1. 전역 변수에 환자 정보 저장 (음성 응답 처리용)
+                window.confirmedPatientData = data.patient_data;
+                confirmTargetName = patientName;
+                confirmTargetNameNorm = normalize(patientName);
 
-            speakOnClient(
-              '이름을 말씀해주세요.',
-              () => {
-                console.log('🔊 이름 입력 TTS 시작 콜백');
-                deactivateMicrophone();
-              },
-              () => {
-                console.log('🔊 이름 입력 TTS 완료 콜백');
-                microphoneEnabled = true;
-                ttsPlaying = false;
-                lastTTSEndAt = Date.now();
-                setTimeout(() => {
-                  if (microphoneEnabled) {
-                    console.log('🎤 이름 입력 후 마이크 활성화');
-                    activateMicrophone();
-                  }
-                }, TTS_COOLDOWN_MS);
-              }
-            );
+                // 2. 상태 업데이트 및 팝업 표시
+                updateStatus(`✅ ${patientName}님 확인. 음성 확인을 진행합니다.`);
+                showNameConfirmationPopup(patientName); 
+
+                // 3. TTS 안내 (TTS 완료 시 마이크 자동 활성화)
+                speakOnClient(
+                    `${patientName} 님이 맞으시면 본인확인이라고 말씀해주세요.`,
+                    () => {
+                        console.log('🔊 본인 확인 TTS 시작');
+                        deactivateMicrophone();
+                    },
+                    () => {
+                        console.log('🔊 본인 확인 TTS 완료');
+                        // TTS 완료 후 상태를 'confirming_user'로 변경하여 음성 응답을 받습니다.
+                        clientState = 'confirming_user'; 
+                        // 마이크는 TTS 콜백의 마지막 로직에서 activateMicrophone()이 처리합니다.
+                    }
+                );
+            } else {
+                // 기존 로직: 0명이거나 다수일 경우의 처리 (추가적인 UI 업데이트 필요)
+                updateStatus(`✅ 1차 검색 완료: ${data.message}`);
+                // TODO: 0명이거나 다수일 경우의 후속 처리 (현재는 UI 변경 없음)
+            }
           } else {
+            // 실패 메시지 (views.py에서 '올바른 13자리...'로 변경됨)
             updateStatus('❌ 1차 인증 실패: ' + data.message);
           }
         })
@@ -548,77 +573,16 @@ function setupAuthEventListeners() {
     });
   }
 
-  if (nameSearchBtn) {
-    nameSearchBtn.addEventListener('click', function () {
-      const name = nameInput?.value?.trim();
-      if (!name) return;
-
-      // 이름 단계에서도 기본 유효성 체크
-      if (!isLikelyName(name)) {
-        updateStatus('이름 형식이 올바르지 않습니다. (한글 2~6자 권장)');
-        return;
-      }
-
-      updateStatus('이름으로 검색 중...');
-      fetch('/kiosk/search_by_name/', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ name: name })
-      })
-        .then(res => res.json())
-        .then(data => {
-          if (data.success) {
-            if (data.confirmation_needed) {
-              updateStatus('음성으로 본인 확인을 진행합니다.');
-              if (websocket && websocket.readyState === WebSocket.OPEN) {
-                websocket.send(JSON.stringify({ type: 'user.confirmation_start', patient: data.patient }));
-              }
-            } else {
-              updateStatus(`✅ ${data.results.length}명의 환자를 찾았습니다.`);
-              displayResults(data.results, selectPatient);
-            }
-          } else {
-            updateStatus('❌ 이름 검색 실패: ' + data.message);
-            // 검색 실패 시에도 TTS로 안내
-            speakOnClient(
-              data.message,
-              () => {
-                console.log('🔊 검색 실패 TTS 시작');
-                deactivateMicrophone();
-              },
-              () => {
-                console.log('🔊 검색 실패 TTS 완료');
-                microphoneEnabled = true;
-                ttsPlaying = false;
-                lastTTSEndAt = Date.now();
-                setTimeout(() => {
-                  if (microphoneEnabled) {
-                    console.log('🎤 검색 실패 후 마이크 활성화');
-                    activateMicrophone();
-                  }
-                }, TTS_COOLDOWN_MS);
-              }
-            );
-          }
-        })
-        .catch(error => {
-          console.error('이름 검색 오류:', error);
-          updateStatus('❌ 이름 검색 중 오류가 발생했습니다.');
-        });
-    });
-  }
-
-  if (nameInput) {
-    nameInput.addEventListener('keypress', e => {
-      if (e.key === 'Enter' && nameSearchBtn) {
-        nameSearchBtn.click();
-      }
-    });
-  }
+  // ★★★ 2차 검색(이름 입력) 로직은 이제 사용하지 않으므로 주석 처리 또는 제거 ★★★
+  // if (nameSearchBtn) { ... }
+  // if (nameInput) { ... }
 }
 
 function selectPatient(patientData) {
   updateStatus(`${patientData.patient_name}님 확인. 서비스 페이지로 이동합니다.`);
+  // ★★★ 팝업 닫기 추가 ★★★
+  hideNameConfirmationPopup(); 
+  
   fetch('/kiosk/select_patient/', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -693,6 +657,11 @@ document.addEventListener('DOMContentLoaded', function () {
     confirmTargetName = null;
     confirmTargetNameNorm = null;
     TTS_COOLDOWN_MS = TTS_COOLDOWN_MS_DEFAULT;
+    clientState = 'listening'; // 초기 상태
+    
+    // ★★★ 추가됨: 전역 변수 초기화 ★★★
+    window.confirmedPatientData = null; 
+
     console.log('📊 초기 상태 설정 - microphoneEnabled:', microphoneEnabled, 'ttsPlaying:', ttsPlaying);
 
     updateStatus('음성 서비스 로딩 중...');
@@ -702,7 +671,7 @@ document.addEventListener('DOMContentLoaded', function () {
       initializeWebSocket();
       setupAuthEventListeners();
 
-      const firstDigitInput = document.querySelector('.birth-digit');
+      const firstDigitInput = document.querySelector('.id-digit'); // .birth-digit 대신 .id-digit 사용
       if (firstDigitInput) firstDigitInput.focus();
 
       // 초기화 완료 후 마이크 활성화 (충분한 딜레이)
@@ -726,6 +695,9 @@ document.addEventListener('DOMContentLoaded', function () {
       audioUnlockOverlay.style.cssText = "position:fixed; top:0; left:0; width:100%; height:100%; z-index:1000; background-color: rgba(0,0,0,0.5); color:white; display:flex; justify-content:center; align-items:center; font-size: 2rem; cursor: pointer;";
       audioUnlockOverlay.innerHTML = "<h1>화면을 터치하여 시작하세요</h1>";
       audioUnlockOverlay.addEventListener('click', initializeKiosk, { once: true });
+    } else {
+        // Overlay가 없으면 즉시 시작
+        initializeKiosk();
     }
   }
 });

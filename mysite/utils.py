@@ -4,6 +4,12 @@ import json
 from openai import OpenAI
 from django.conf import settings
 
+import datetime
+import re
+from typing import Optional, List, Dict, Any # ★★★ [수정] 누락된 타입 힌트 import 추가 ★★★
+from urllib.parse import urlencode
+
+
 logger = logging.getLogger('kiosk')
 client = OpenAI(api_key=getattr(settings, 'OPENAI_API_KEY', ''))
 
@@ -118,6 +124,7 @@ async def get_gpt_streaming_response(user_input, system_prompt=SYSTEM_PROMPT):
 # ==========================
 # 🔹 텍스트 전처리 및 단순 패턴 함수
 # ==========================
+
 def clean_voice_input(text):
     if not text:
         return ""
@@ -137,6 +144,78 @@ def get_appropriate_response(text):
         return "천만에요! 다른 도움이 필요하시면 언제든 말씀해주세요."
     return None
 
+# ★★★ [추가/복구] 날짜 처리 함수들 (service_consumers.py에서 필요) ★★★
+
+def normalize_date_text(date_text: str) -> str:
+    """날짜 텍스트에서 불필요한 단어를 제거하고 숫자를 추출"""
+    text = (date_text or "").strip()
+    text = re.sub(r'[^0-9가-힣\s/.-]', '', text).replace(" ", "")
+    
+    # "년월일" 단어 제거
+    text = text.replace("년", " ").replace("월", " ").replace("일", " ").strip()
+    return text
+
+def convert_date_to_db_format(date_text: str) -> Optional[str]:
+    """
+    다양한 형태의 날짜 텍스트를 'YYYY-MM-DD' 형식의 문자열로 변환 (DB 저장용)
+    """
+    text = normalize_date_text(date_text)
+    parts = re.findall(r'\d+', text)
+    
+    current_year = datetime.date.today().year
+
+    # 1. YYYYMMDD 형태 (8자리)
+    if len(parts) == 1 and len(parts[0]) == 8:
+        try:
+            dt = datetime.datetime.strptime(parts[0], '%Y%m%d').date()
+            return dt.strftime('%Y-%m-%d')
+        except ValueError:
+            pass
+            
+    # 2. YYYY, MM, DD 형태 (3 파트)
+    if len(parts) == 3:
+        y, m, d = parts
+        try:
+            # 연도 2자리인 경우 2000년대라고 가정 (e.g. 25 -> 2025)
+            if len(y) == 2: y = '20' + y 
+            dt = datetime.date(int(y), int(m), int(d))
+            return dt.strftime('%Y-%m-%d')
+        except ValueError:
+            pass
+
+    # 3. MM/DD 형태 (2 파트) 또는 MM/DD만 인식된 경우
+    if len(parts) == 2:
+        m, d = parts
+        try:
+            # 현재 연도를 붙여서 시도
+            dt = datetime.date(current_year, int(m), int(d))
+            return dt.strftime('%Y-%m-%d')
+        except ValueError:
+            # 날짜가 유효하지 않을 경우 (e.g. 2월 30일) None 반환
+            pass
+
+    # 4. '오늘', '어제' 등 상대적 날짜 처리 (간단하게)
+    text_lower = date_text.strip().lower()
+    if '오늘' in text_lower or '당일' in text_lower:
+        return datetime.date.today().strftime('%Y-%m-%d')
+    if '어제' in text_lower:
+        return (datetime.date.today() - datetime.timedelta(days=1)).strftime('%Y-%m-%d')
+        
+    return None # 변환 실패
+
+def is_cancel_response(text: str) -> bool:
+    """취소/중단 관련 답변 ('취소', '그만', '종료' 등) 판단"""
+    t = (text or "").lower().replace(" ", "")
+    if not t: return False
+    return any(k in t for k in ["취소", "그만", "안해", "중단", "종료", "하지마"])
+    
+def is_issue_response(text: str) -> bool:
+    """발급/출력 의사 ('발급해줘', '8급' 등) 판단"""
+    t = (text or "").lower().replace(" ", "")
+    if not t: return False
+    issue_words = ["발급", "출력", "진행", "해줘", "해주세요", "바로해", "진행해", "출력해", "뽑아", "인쇄", "프린트", "8급", "팔급"]
+    return any(word in t for word in issue_words)
+
 # ==========================
 # ⚙️ 기존 인터페이스와 호환되는 래퍼
 # ==========================
@@ -149,3 +228,4 @@ async def analyze_voice_intent(text):
     mode = result.get("mode", "other")
     logger.info(f"🎯 analyze_voice_intent 결과 → {mode}")
     return mode, result
+

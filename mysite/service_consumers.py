@@ -10,7 +10,8 @@ import json
 import asyncio
 import logging
 
-from .consumers import print_document
+from .consumers import print_document 
+from .utils import convert_date_to_db_format, is_cancel_response, is_issue_response, clean_voice_input # 등 필요한 모든 유틸 함수
 
 from datetime import date, datetime
 
@@ -170,6 +171,21 @@ class ServiceWebSocketConsumer(AsyncWebsocketConsumer):
         if isinstance(v, date):
             return v.strftime("%Y-%m-%d")
         return v
+    
+    def get_valid_date_from_text(self, text):
+        # text: "7월 16일" 같은 음성 입력
+        # convert_date_to_db_format 함수는 utils.py에 있다고 가정합니다.
+        
+        # 날짜 변환 시도 (utils.py 사용)
+        converted_date = convert_date_to_db_format(text)
+        
+        if converted_date:
+            logger.info(f"날짜 변환 성공: '{text}' → '{converted_date}'")
+            return converted_date
+        
+        logger.warning(f"날짜 변환 실패, 원본 반환: '{text}'")
+        return None
+    
 
     # ------------- 연결 -------------
     async def connect(self):
@@ -284,21 +300,27 @@ class ServiceWebSocketConsumer(AsyncWebsocketConsumer):
 
             # ✅ 날짜 선택 단계 (date_selection)
             if current_step == 'date_selection':
-                # 📌 날짜 유효성 검증 및 변환 로직 가정 (utils.py 또는 consumers.py의 함수 사용)
-                issue_date_str = self.get_valid_date_from_text(text) # 가정: 유효한 날짜 문자열 반환
+                # 📌 2. 누락된 함수 호출: self.get_valid_date_from_text 사용
+                issue_date_str = self.get_valid_date_from_text(text) 
 
                 if issue_date_str:
-                    logger.info(f"날짜 입력 감지: '{text}' → 직접 프린터 처리로 이동") # 이모지 제거
-
+                    logger.info(f"날짜 선택 입력 감지: '{text}' → 직접 프린터 처리로 이동") # 이모지 제거
+                    
                     # 1. 상태를 'busy_printing'으로 변경하여 10초간 입력 무시 시작
                     self.client_state.set('step', 'busy_printing') 
                     await self.send_message('status', {'state': 'busy_printing'}) # UI에게 인쇄 중임을 알림
                     
                     # 2. 프린트 명령 실행 (이 안에서 "발급을 시작합니다" TTS 나감)
-                    success = print_document(
-                        self.scope, self.client_state.get("selected_doc_type"), issue_date_str, self.client_state.get('printer_name')
+                    success = await self.channel_layer.send(
+                        self.channel_name,
+                        {
+                            "type": "print.document.task",
+                            "doc_type": self.client_state.get("selected_doc_type"),
+                            "issue_date": issue_date_str,
+                            "print_queue_name": self.client_state.get('printer_name')
+                        }
                     )
-
+                    
                     if success:
                         # 3. 10초 딜레이 (발급 시간)
                         await asyncio.sleep(10) # ★★★ 10초 지연 ★★★
@@ -317,13 +339,14 @@ class ServiceWebSocketConsumer(AsyncWebsocketConsumer):
                     return # 처리 완료
 
                 else:
+                    # 날짜 변환 실패
                     await self.send_tts(f"유효한 날짜를 말씀해주세요.", voice_mode='date_selection')
                     self.client_state.set('step', 'date_selection')
                     return
-
+            
             # ✅ 추가 발급 요청 단계 처리 (await_additional_issue) - NEW LOGIC
             if current_step == 'await_additional_issue':
-                 await self.handle_additional_issue_request(text) # New handler
+                 await self.handle_additional_issue_request(text)
                  return
 
             # 나머지 단계만 GPT 분석 수행
@@ -337,10 +360,6 @@ class ServiceWebSocketConsumer(AsyncWebsocketConsumer):
 
     # ★★★ 새로운 핸들러 추가: handle_additional_issue_request (기존 로직을 따름) ★★★
     async def handle_additional_issue_request(self, text):
-        # 📌 is_issue_response, is_cancel_response 등 유틸 함수가 필요합니다.
-        #    여기서는 임시로 문자열 비교로 대체합니다.
-        
-        # 템프 브랜치의 utils.py 파일을 기준으로 가정
         from .utils import is_cancel_response # is_issue_response는 consumers.py에서 가져와야 함.
         
         if "종료" in text or is_cancel_response(text):

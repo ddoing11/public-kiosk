@@ -336,12 +336,19 @@ function handleMessage(data) {
           console.log('🔊 TTS 재생 상태: 종료');
           updateTTSStatus('end');
           setTimeout(() => {
+            // 서버에서 activate_mic=false로 지정된 경우엔 마이크 재활성화 안 함
+            if (data.activate_mic === false) {
+              console.log('🛑 activate_mic=false → 마이크 유지 (비활성 상태)');
+              return;
+            }
+
             if (!isTTSPlaying) {
               console.log('🎤 TTS 완료 후 마이크 자동 활성화');
               activateMic();
             }
           }, 300);
         }
+
       );
       break;
     }

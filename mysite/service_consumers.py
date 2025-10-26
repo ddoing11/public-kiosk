@@ -264,12 +264,15 @@ class ServiceWebSocketConsumer(AsyncWebsocketConsumer):
     async def send_error(self, error_message):
         await self.send_message("error", {"message": error_message})
 
-    async def send_tts_with_tracking(self, text):
-        # 서버에서 먼저 mic.off → TTS 텍스트 전송 (레이스 방지)
+    async def send_tts_with_tracking(self, text, activate_mic=True):
+        """
+        TTS 재생 요청을 보낼 때 마이크 on/off 제어를 함께 관리.
+        activate_mic=False이면 TTS 완료 후 mic.on 신호를 보내지 않음.
+        """
         await self.send_message("mic.off")
         self.recent_tts_content = text
         self.awaiting_tts = True
-        await self.send_message("tts.text", {"text": text})
+        await self.send_message("tts.text", {"text": text, "activate_mic": activate_mic})
 
     # ------------- 최초 안내 -------------
     async def start_voice_guidance(self):
@@ -325,15 +328,13 @@ class ServiceWebSocketConsumer(AsyncWebsocketConsumer):
                     )
 
                     if success:
-                        # 1️⃣ 프린트 완료 후 10초 대기
+                        # 프린트 완료 후 잠시 대기
                         await asyncio.sleep(10)
-
-                        # 2️⃣ 발급 완료 안내 (마이크 비활성 유지)
+                        # 발급 완료 안내 시 마이크 비활성 유지
                         await self.send_tts_with_tracking(FINAL_ISSUE_PROMPT, activate_mic=False)
-
-                        # 3️⃣ 발급 완료 후 상태 갱신 (마이크는 여전히 off)
                         self.client_state['step'] = 'await_additional_issue'
                         await self.send_message('status', {'state': 'listening'})
+
 
                     else:
                         await self.send_tts_with_tracking("발급 중 오류가 발생했습니다. 다시 시도해주세요.")
@@ -373,7 +374,7 @@ class ServiceWebSocketConsumer(AsyncWebsocketConsumer):
             self.client_state["step"] = "completed"
 
             # 💡 TTS 완료 후 잠시 대기 → idle 전환
-            await asyncio.sleep(3.5)
+            await asyncio.sleep(3.9)
             await self.send_message("status", {"state": "idle"})  # front에서 idle UI 진입
             self.logger.info("[상태] idle 전환 완료")
             return

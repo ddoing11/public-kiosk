@@ -1,16 +1,15 @@
-import asyncio
-import logging
-import json
-from openai import OpenAI
-from django.conf import settings
-
-import datetime
+import asyncio # (다른 함수에서 사용될 수 있음)
+import json # (다른 함수에서 사용될 수 있음)
+import logging # (다른 함수에서 사용될 수 있음)
 import re
-from typing import Optional, List, Dict, Any # ★★★ [수정] 누락된 타입 힌트 import 추가 ★★★
+import datetime
+from datetime import timedelta # ★★★ [수정] timedelta 명시적 import
+from typing import Optional, List, Dict, Any # ★★★ [수정] typing 모듈의 타입 힌트 import
 from urllib.parse import urlencode
 
-
 logger = logging.getLogger('kiosk')
+from openai import OpenAI # OpenAI import
+from django.conf import settings # settings import
 client = OpenAI(api_key=getattr(settings, 'OPENAI_API_KEY', ''))
 
 # ==========================
@@ -124,11 +123,10 @@ async def get_gpt_streaming_response(user_input, system_prompt=SYSTEM_PROMPT):
 # ==========================
 # 🔹 텍스트 전처리 및 단순 패턴 함수
 # ==========================
-
 def clean_voice_input(text):
     if not text:
         return ""
-    text = text.strip()
+    text = re.sub(r'[.,?!]', '', text).strip()
     for phrase in ['음', '어', '그', '저기', '그거']:
         text = text.replace(phrase + ' ', '').replace(' ' + phrase, '')
     return text
@@ -143,6 +141,7 @@ def get_appropriate_response(text):
     if '감사' in text or '고마워' in text:
         return "천만에요! 다른 도움이 필요하시면 언제든 말씀해주세요."
     return None
+
 
 # ★★★ [추가/복구] 날짜 처리 함수들 (service_consumers.py에서 필요) ★★★
 
@@ -216,6 +215,7 @@ def is_issue_response(text: str) -> bool:
     issue_words = ["발급", "출력", "진행", "해줘", "해주세요", "바로해", "진행해", "출력해", "뽑아", "인쇄", "프린트", "8급", "팔급"]
     return any(word in t for word in issue_words)
 
+
 # ==========================
 # ⚙️ 기존 인터페이스와 호환되는 래퍼
 # ==========================
@@ -224,8 +224,13 @@ async def analyze_voice_intent(text):
     ✅ 기존 시스템과의 호환 유지용 래퍼
     GPT가 반환한 mode를 그대로 전달
     """
-    result = await analyze_intent_with_gpt(text)
-    mode = result.get("mode", "other")
-    logger.info(f"🎯 analyze_voice_intent 결과 → {mode}")
-    return mode, result
-
+    # 📌 analyze_intent_with_gpt 함수 정의가 이 파일에 없으므로 (다른 파일에 있다고 가정)
+    #    analyze_intent_with_gpt를 호출하는 대신, 직접 로직을 실행하거나
+    #    analyze_intent_with_context 같은 함수를 호출해야 함
+    
+    # 📌 임시: 이 래퍼는 service_consumers.py에서 analyze_input_with_context를 대신 호출함
+    #    analyze_input_with_context 함수는 service_consumers.py 클래스 내부에 있으므로 여기서는 정의할 수 없음.
+    
+    # 이 부분은 service_consumers.py가 호출하지 않으므로, 이 래퍼는 utils.py에서 제거하거나, 
+    # service_consumers.py에서 analyze_intent_with_context를 바로 호출하도록 수정해야 합니다.
+    pass

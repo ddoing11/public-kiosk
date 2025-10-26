@@ -337,7 +337,7 @@ class ServiceWebSocketConsumer(AsyncWebsocketConsumer):
 
                 else:
                     # 날짜 변환 실패
-                    await self.send_tts(f"유효한 날짜를 말씀해주세요.", voice_mode='date_selection')
+                    await self.send_tts_with_tracking(f"유효한 날짜를 말씀해주세요.")
                     self.client_state['step'] = 'date_selection'
                     return
             

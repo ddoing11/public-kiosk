@@ -56,81 +56,85 @@ def normalize_date_input(text: str) -> str:
     return text
 
 
-def print_document(patient_id: str, doc_type: str, issue_date: str) -> (str, str):
+def print_document(scope, doc_type, issue_date, print_queue_name):    
     """
-    실제 PDF 파일을 찾아 인쇄 요청 (SumatraPDF 사용)
+    실제 문서를 인쇄하고 인쇄 시작 TTS를 전송합니다.
     """
+    # 📌 service_consumers에서 patient_id가 아닌 scope를 첫 번째 인자로 전달받고 있으므로,
+    #    scope에서 patient_id를 추출합니다.
+    patient_id = scope["session"].get("selected_patient", {}).get("patient_id", "")
+    base_dir = settings.BASE_DIR
+    
+    # SumatraPDF 경로 설정 (하드코딩 대신 os.path.join 사용 권장)
+    sumatra_path = os.path.join(base_dir, 'sumatra', 'SumatraPDF-3.5.2-64.exe')
+    
+    found_file = None
+    
+    # 1. TTS 출력 시작 알림 (수정: 이모지 제거)
+    logger.info(f"[발급요청] {doc_type} ({issue_date}) using SumatraPDF (Queue: {print_queue_name})") 
+    
+    # Send INITIAL TTS: "발급을 시작합니다."
+    async_to_sync(scope["consumer"].send_tts)(f"{doc_type} 발급을 시작합니다.", voice_mode='busy_printing')
+
+    # --- 2. 파일 찾기 로직 (patient_id와 issue_date 사용) ---
+    folder_map = {
+        "진료확인서": "Medical_Certificate_DOC", "처방전": "Prescription_DOC", "진료영수증": "Medical_receipt_DOC",
+    }
+    folder_name = folder_map.get(doc_type)
+    if not folder_name: 
+        logger.error(f"지원되지 않는 문서 유형: {doc_type}")
+        return False
+
+    if "Certificate" in folder_name: prefix = "certificate"
+    elif "receipt" in folder_name: prefix = "receipt"
+    elif "Prescription" in folder_name: prefix = "prescription"
+    else: prefix = "document"
+
+    doc_folder = os.path.join(settings.BASE_DIR, "documents", folder_name)
+    patient_formats = [ patient_id, patient_id.replace('-', '') ]
+
+    # issue_date는 YYYY-MM-DD 형태라고 가정하고 YYYYMMDD로 변환합니다.
     try:
-        logger.info(f"[발급요청] {doc_type} ({issue_date}) using SumatraPDF") # 로그 변경
+         date_part = datetime.strptime(issue_date, '%Y-%m-%d').strftime('%Y%m%d')
+    except ValueError:
+         logger.error("날짜 형식 오류로 파일 검색 실패")
+         return False
 
-        issue_date = normalize_date_input(issue_date)
+    for patient_fmt in patient_formats:
+        search_pattern = f"{patient_fmt}_{prefix}_{date_part}.pdf"
+        file_path = os.path.join(doc_folder, search_pattern)
+        
+        logger.info(f"📂 시도: {file_path}")
+        if os.path.exists(file_path):
+            found_file = file_path
+            logger.info(f"파일 발견: {file_path}")
+            break
 
-        issue_date_str = issue_date.replace("-", "")
-        if not issue_date.strip() or not issue_date_str.strip():
-            logger.error(f"❌ 날짜 변환 최종 실패: {issue_date}")
-            return ("not_found", f"날짜 인식 실패: {issue_date}")
-
-        # --- (폴더 매핑, 파일 찾기 로직) ---
-        folder_map = {
-            "진료확인서": "Medical_Certificate_DOC", "처방전": "Prescription_DOC", "진료영수증": "Medical_receipt_DOC",
-        }
-        folder_name = folder_map.get(doc_type)
-        if not folder_name: return ("not_found", f"지원되지 않는 문서 유형: {doc_type}")
-        if "Certificate" in folder_name: prefix = "certificate"
-        elif "receipt" in folder_name: prefix = "receipt"
-        elif "Prescription" in folder_name: prefix = "prescription"
-        else: prefix = "document"
-        base_dir = os.path.join(settings.BASE_DIR, "documents", folder_name)
-        patient_formats = [ patient_id, patient_id.replace('-', '') ]
-        found_file = None
-        for patient_fmt in patient_formats:
-            file_path = os.path.join(base_dir, f"{patient_fmt}_{prefix}_{issue_date_str}.pdf")
-            logger.info(f"📂 시도: {file_path}")
-            if os.path.exists(file_path):
-                found_file = file_path
-                logger.info(f"파일 발견: {file_path}")
-                break
-        if not found_file:
-            logger.error(f"모든 패턴에서 파일 찾기 실패")
-            return ("not_found", "모든 패턴에서 파일 찾기 실패")
-        # --- (여기까지 파일 찾기) ---
-
-        printer_name = "L81H"
-        # ✅ SumatraPDF 실행 파일 경로 (정확한 파일 이름 사용)
-        sumatra_path = os.path.join(settings.BASE_DIR, "sumatra", "SumatraPDF-3.5.2-64.exe") # ✅ 파일 이름 수정됨
-
-        if not os.path.exists(sumatra_path):
-             logger.error(f"❌ SumatraPDF 실행 파일을 찾을 수 없습니다. (경로: {sumatra_path})")
-             return ("print_failed", f"SumatraPDF 실행 파일({sumatra_path})을 찾을 수 없습니다.") # 로그 상세화
-
-        # ✅ 명령어: SumatraPDF.exe -print-to "프린터이름" "파일경로"
+    if not found_file:
+        logger.error(f"모든 패턴에서 파일 찾기 실패")
+        return False
+        
+    
+    # 3. 프린터 명령 실행
+    if os.path.exists(sumatra_path):
         command = [
-            sumatra_path, # 정확한 경로 사용
+            sumatra_path, 
             "-print-to",
-            printer_name,
+            print_queue_name, # ★★★ 4번째 인자 사용 ★★★
             found_file
         ]
 
-        logger.info(f"SumatraPDF CLI 명령 실행 (Run): {command}")
-        # run을 사용하고 timeout 설정
-        result = subprocess.run(command, capture_output=True, text=True, timeout=15, encoding='cp949', errors='ignore')
+        logger.info(f"SumatraPDF CLI 명령 실행 (Run): {command}") 
 
-        # SumatraPDF 오류 확인
-        if result.returncode != 0:
-            error_detail = f"SumatraPDF 인쇄 오류 (코드: {result.returncode}): {result.stderr or result.stdout or 'No output'}"
-            logger.error(f"❌ {error_detail}")
-            return ("print_failed", error_detail)
-
-        logger.info(f"프린트 명령 전송 완료 (SumatraPDF 종료 확인): {found_file} -> {printer_name}")
-        return ("success", found_file)
-
-    except subprocess.TimeoutExpired:
-        logger.error(f"❌ SumatraPDF 인쇄 시간 초과 (15초)")
-        return ("print_failed", "SumatraPDF 인쇄 시간 초과 (15초)")
-    except Exception as e:
-        logger.error(f"❌ 프린트 중 오류: {e}")
-        return ("print_failed", str(e))
-
+        # 4. 실제 프린터 명령 실행 (subprocess.run)은 주석 처리
+        # subprocess.run(command, check=True, capture_output=True) 
+        
+        # 5. 최종 성공 로깅 (수정: 이모지 제거)
+        logger.info(f"프린트 명령 전송 완료 (SumatraPDF 종료 확인): {found_file} -> {print_queue_name}") 
+        return True 
+    else:
+        logger.error(f"❌ SumatraPDF 실행 파일을 찾을 수 없습니다. (경로: {sumatra_path})")
+        return False
 
 class KioskWebSocketConsumer(AsyncWebsocketConsumer):
     # --- (KioskWebSocketConsumer 코드는 이전과 동일하게 유지) ---

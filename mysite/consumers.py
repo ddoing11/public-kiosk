@@ -198,8 +198,11 @@ class KioskWebSocketConsumer(AsyncWebsocketConsumer):
                 await self.handle_print_request(data)
 
             elif message_type in ["tts.complete", "audio.tts_playback_complete", "ttscomplete"]:
-                logger.info("[Consumer] 클라이언트 TTS 재생 완료 신호 수신 → Router로 전달")
-                await self.router.handle_message(json.dumps({"type": "tts.complete"}))
+                logger.info("[KioskConsumer] TTS 완료 신호 수신 — 마이크 활성화 처리")
+                import asyncio
+                await asyncio.sleep(0.2)
+                await self.send_message("mic.on")
+                return
 
 
             else:

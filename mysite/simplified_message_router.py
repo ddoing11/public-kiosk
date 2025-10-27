@@ -14,6 +14,9 @@ import json
 import logging
 from .state_manager import KioskStateManager # ★ 여기가 KioskStateManager 여야 합니다 ★
 from .database_handler import DatabaseManager
+import asyncio
+
+
 
 # 로거 설정
 logger = logging.getLogger('kiosk')
@@ -57,14 +60,11 @@ class HospitalMessageRouter:
                 if patient_data:
                     await self.state_manager.start_user_confirmation(patient_data)
 
-            elif  message_type in ['tts.complete', 'audio.tts_playback_complete', 'ttscomplete', 'audio.tts.complete']:
-                # (v3 신규) 클라이언트 TTS 재생 완료 신호
-                logger.debug("[Router] 클라이언트 TTS 재생 완료 신호 수신")
-                await self.state_manager.notify_tts_playback_complete()
-
-            elif message_type in ['tts.complete', 'audio.tts_playback_complete', 'ttscomplete', 'audio.tts.complete']:
-                logger.info("[Router] (v3) TTS 완료 신호 수신 → 상태 관리자에 전달")
-                await self.state_manager.notify_tts_playback_complete()
+            elif message_type in ["tts.complete", "audio.tts_playback_complete", "ttscomplete"]:
+                logger.info("[KioskConsumer] TTS 완료 신호 수신 — 마이크 활성화 처리")
+                await asyncio.sleep(0.2)
+                await self.send_message("mic.on")
+                return
 
 
             else:

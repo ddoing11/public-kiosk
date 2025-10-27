@@ -15,6 +15,8 @@ let isListening = false;
 let isTTSPlaying = false;            // TTS 재생 상태
 let ttsTimeoutId = null;             // TTS 타임아웃 ID
 let allowShortInput = false;         // 짧은 음성 인식 허용 여부
+let micLocked = false;  // ✅ 프린트 중 마이크 잠금 상태 플래그
+
 
 // 짧은 음성 버퍼링
 let shortInputBuffer = [];
@@ -135,10 +137,10 @@ function startRecognition() {
 
   recognition.onend = () => {
     recognition = null;
-    const mic = safeEl('mic-indicator');
+    /* const mic = safeEl('mic-indicator');
     if (mic && mic.classList.contains('active') && isListening && !isTTSPlaying) {
       setTimeout(startRecognition, 100); // 0.1초 뒤 재시작
-    }
+    } */
   };
 
   recognition.start();
@@ -159,11 +161,28 @@ function stopRecognition() {
 function shouldIgnoreTranscript(transcript) {
   if (!transcript) return true;
 
-  // TTS 재생 중엔 무조건 무시
+  // ✅ 종료 명령 예외 처리
+  if (transcript.trim() === "종료") {
+    console.log("🛑 종료 명령 인식 — 세션 종료 처리 (TTS 중이라도 예외 허용)");
+    deactivateMic(); // 마이크 즉시 끄기
+    if (serviceWebSocket && serviceWebSocket.readyState === WebSocket.OPEN) {
+      serviceWebSocket.send(JSON.stringify({ type: "session.end" }));
+    }
+    return true; // 종료 후 추가 처리 중단
+  }
+
+  // ✅ 자기 TTS 중이라도 "종료"는 예외
+  if (isTTSPlaying && transcript.trim() === "종료") {
+    console.log("🛑 TTS 중이지만 종료 예외 허용");
+    return false;
+  }
+
+  // 🧱 그 외 기존 필터 로직 그대로 유지
   if (isTTSPlaying) {
     console.log(`🚫 TTS 재생 중이므로 무시: "${transcript}"`);
     return true;
   }
+
 
   // 중요한 키워드는 길이에 상관없이 허용
   const importantKeywords = ['상담','문의','질문','도움','처방전','진료확인서','진료영수증','확인서','영수증'];
@@ -227,13 +246,18 @@ function processBufferedInput() {
   shortInputBuffer = [];
   shortInputTimer = null;
 
-  if (combined.length >= 4) {
-    updateVoiceStatus(`"${combined}" 처리 중...`);
-    sendVoiceInput(combined);
-  } else {
-    console.log(`🚫 버퍼된 입력도 너무 짧아서 무시: "${combined}"`);
+
+
+  // ✅ 짧은 입력 필터 (예외: 종료, 네, 아니요)
+  if (combined.length < 3 && !["종료"].includes(combined.trim())) {
+    console.log("🚫 버퍼된 입력도 너무 짧아서 무시:", combined);
+    return;
   }
+
+  updateVoiceStatus(`"${combined}" 처리 중...`);
+  sendVoiceInput(combined);
 }
+
 
 // ===== TTS 상태 관리 =====
 function setTTSPlaying(playing) {
@@ -250,23 +274,27 @@ function setTTSPlaying(playing) {
       console.log('⚠️ TTS 타임아웃으로 강제 해제');
       isTTSPlaying = false;
       setTimeout(() => {
-        console.log('🎤 TTS 타임아웃 후 마이크 강제 활성화');
-        activateMic();
+        if (!micLocked) {
+          console.log('🎤 TTS 타임아웃 후 마이크 강제 활성화');
+          activateMic();
+        }
       }, 500);
+
     }, 10000);
   } else {
     if (ttsTimeoutId) {
       clearTimeout(ttsTimeoutId);
       ttsTimeoutId = null;
     }
-    if (isListening && !recognition) {
+    /* if (isListening && !recognition) {
       setTimeout(startRecognition, 500);
     } else if (!isListening) {
       setTimeout(() => {
         console.log('🎤 TTS 종료 후 마이크 활성화 (조건 완화)');
         activateMic();
       }, 500);
-    }
+    } */
+
   }
 }
 
@@ -332,22 +360,21 @@ function handleMessage(data) {
           deactivateMic();
         },
         () => {
-          // onEnd
-          console.log('🔊 TTS 재생 상태: 종료');
-          updateTTSStatus('end');
-          setTimeout(() => {
-            // 서버에서 activate_mic=false로 지정된 경우엔 마이크 재활성화 안 함
-            if (data.activate_mic === false) {
-              console.log('🛑 activate_mic=false → 마이크 유지 (비활성 상태)');
-              return;
-            }
-
-            if (!isTTSPlaying) {
-              console.log('🎤 TTS 완료 후 마이크 자동 활성화');
-              activateMic();
-            }
-          }, 300);
-        }
+          // onEnd
+          console.log('🔊 TTS 재생 상태: 종료');
+          updateTTSStatus('end');
+          
+          // 🛑 [수정] micLocked 상태가 아닐 때만 자동 활성화
+          // (data.activate_mic === false 인 경우는 백엔드가 명시적으로 끈 것이므로 제외)
+          if (data.activate_mic !== false && !micLocked) {
+            setTimeout(() => {
+              if (!isListening && !isTTSPlaying) {
+                 console.log('🎤 TTS 완료 후 마이크 자동 활성화');
+                 activateMic();
+              }
+            }, 300); // 0.3초 딜레이
+          }
+        }
 
       );
       break;
@@ -355,8 +382,25 @@ function handleMessage(data) {
 
     case 'mic.on':
       console.log('🎤 마이크 재활성화 신호 수신');
-      if (!isListening && !isTTSPlaying) activateMic();
+      if (!micLocked && !isListening && !isTTSPlaying) {
+        activateMic();
+      } else {
+        console.log('🚫 출력 중(mic.lock) 상태 → mic.on 무시');
+      }
       break;
+
+    
+    case 'mic.lock':
+      console.log('🔒 마이크 잠금 (출력 중)');
+      micLocked = true;
+      deactivateMic();
+      break;
+
+    case 'mic.unlock':
+      console.log('🔓 마이크 잠금 해제');
+      micLocked = false;
+      break;
+
 
     case 'mic.off':
       console.log('🔇 마이크 비활성화 신호 수신');
@@ -444,11 +488,17 @@ function handleGPTStream(data) {
         deactivateMic();
       },
       () => {
-        updateTTSStatus('end');
-        setTimeout(() => {
-          if (!isTTSPlaying) activateMic();
-        }, 500);
-      }
+        updateTTSStatus('end');
+        // 🛑 [수정] micLocked 상태가 아닐 때만 자동 활성화
+        if (!micLocked) {
+          setTimeout(() => {
+            if (!isListening && !isTTSPlaying) {
+               console.log('🎤 GPT 스트림 완료 후 마이크 자동 활성화');
+               activateMic();
+            }
+          }, 500);
+        }
+      }
     );
   }
 }
@@ -529,10 +579,12 @@ document.addEventListener('DOMContentLoaded', async function () {
     initializeWebSocket();
 
     // WebSocket 연결 후 잠시 대기하고 마이크 자동 활성화
-    setTimeout(() => {
-      console.log('🎤 초기화 완료 후 마이크 자동 활성화');
-      activateMic();
-    }, 2000);
+    /*
+    setTimeout(() => {
+      console.log('🎤 초기화 완료 후 마이크 자동 활성화');
+      activateMic();
+    }, 2000);
+    */
 
     console.log('✅ 초기화 완료');
   } catch (error) {

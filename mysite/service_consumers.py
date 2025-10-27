@@ -10,6 +10,9 @@ import json
 import asyncio
 import logging
 
+
+from mysite.utils import find_document_path
+
 from .consumers import print_document 
 from .utils import convert_date_to_db_format, is_cancel_response, is_issue_response, clean_voice_input # 등 필요한 모든 유틸 함수
 
@@ -23,6 +26,16 @@ from openai import OpenAI
 
 from .models import Medical_Certificate, Prescription, MedicalReceipt
 from .utils import get_gpt_streaming_response  # 프로젝트 내 스트리밍 유틸
+
+import sys
+
+
+logging.basicConfig(
+    level=logging.INFO,
+    stream=sys.stdout,
+    format="%(levelname)s %(message)s",
+    encoding="utf-8"
+)
 
 logger = logging.getLogger("kiosk")
 
@@ -190,12 +203,54 @@ class ServiceWebSocketConsumer(AsyncWebsocketConsumer):
     async def handle_print_request(self):
         """selected_doc_type을 기준으로 DB 조회 후 발급 확인 플로우로 연결"""
         doc_type = self.client_state.get("selected_doc_type")
+        selected_date = self.client_state.get("selected_date")
+
         if not doc_type:
             await self.send_tts_with_tracking("어떤 서류를 발급하시겠습니까? 서류명을 다시 말씀해주세요.")
             return
 
-        self.logger.info(f"handle_print_request() 호출됨: {doc_type}")
-        await self.query_database(doc_type)
+        if not selected_date:
+            await self.send_tts_with_tracking("원하시는 날짜를 말씀해주세요.")
+            self.client_state["step"] = "date_selection"
+            return
+
+        self.logger.info(f"[발급요청] {doc_type} / {selected_date}")
+
+        # ✅ patient_id 가져오기 (세션 기반)
+        patient_id = None
+        if self.selected_patient:
+            patient_id = self.selected_patient.get("patient_id")
+        if not patient_id:
+            patient_id = "unknown"
+
+        # 문서 경로 찾기
+        file_path = find_document_path(patient_id, doc_type, selected_date)
+
+
+        if not file_path:
+            self.logger.warning(f"[경고] 파일을 찾을 수 없음: {doc_type}, {selected_date}")
+            await self.send_tts_with_tracking("해당 날짜의 서류를 찾을 수 없습니다. 다른 날짜를 말씀해주세요.")
+            self.client_state["step"] = "date_selection"
+            return
+
+        try:
+            # ✅ 인자 4개 모두 전달
+            success = print_document(file_path, patient_id, doc_type, selected_date)
+
+            if success:
+                self.logger.info("🖨️ 프린트 명령 전송됨. 실제 출력을 위해 13초 대기...")
+                await asyncio.sleep(13.0)
+                self.logger.info("✅ 프린트 완료. 발급 완료 음성 출력 준비")
+
+                await self.send_tts_with_tracking(FINAL_ISSUE_PROMPT)
+                self.client_state["step"] = "await_additional_issue"
+                await self.send_message("status", {"state": "listening"})
+            else:
+                self.logger.warning("⚠️ 출력 실패: 프린터 오류 또는 파일 손상")
+                await self.send_tts_with_tracking("출력 중 오류가 발생했습니다. 다시 시도해주세요.")
+        except Exception as e:
+            self.logger.error(f"프린트 처리 중 예외: {e}")
+            await self.send_tts_with_tracking("출력 중 문제가 발생했습니다. 다시 시도해주세요.")
 
 
     # ------------- 연결 -------------
@@ -251,6 +306,15 @@ class ServiceWebSocketConsumer(AsyncWebsocketConsumer):
                 else:
                     self.logger.info("mic.on 디바운스에 의해 생략")
 
+            elif msg_type == "session.end":
+                self.logger.info("🛑 세션 종료 요청 수신 — idle 상태로 전환")
+                await self.send_tts_with_tracking("이용해주셔서 감사합니다. 안녕히 가세요.")
+                await asyncio.sleep(2.5)  # 음성 끝난 뒤 idle 진입
+                await self.send_message("status", {"state": "idle"})
+                self.client_state["step"] = "idle"
+                return
+
+
             else:
                 self.logger.warning(f"알 수 없는 메시지 타입: {msg_type}")
         except Exception as e:
@@ -288,6 +352,13 @@ class ServiceWebSocketConsumer(AsyncWebsocketConsumer):
         try:
             current_step = self.client_state.get('step')
             logger.info(f"📥 현재 단계: {current_step}, 입력: {text}")
+            # === 모든 단계에서 공통으로 적용되는 종료 명령 처리 ===
+            if any(k in text for k in ["종료", "그만", "끝", "안해", "취소"]):
+                self.logger.info("🛑 사용자가 종료 요청함 — 대화 종료")
+                await self.send_tts_with_tracking("이용해주셔서 감사합니다. 안녕히 가세요.")
+                self.client_state["step"] = "idle"
+                await self.send_message("status", {"state": "idle"})
+                return
 
             # ✅ 발급 확인 단계 (waiting_for_issue_confirmation)
             if current_step == 'waiting_for_issue_confirmation':
@@ -311,45 +382,66 @@ class ServiceWebSocketConsumer(AsyncWebsocketConsumer):
                 self.client_state["step"] = "waiting_for_issue_confirmation"
                 return
 
-            # ✅ 날짜 선택 단계
-            if current_step == 'date_selection':
-                issue_date_str = self.get_valid_date_from_text(text)
-                if issue_date_str:
-                    logger.info(f"날짜 선택 입력 감지: '{text}' → 직접 프린터 처리로 이동")
+            if current_step == "date_selection":
+                t = (text or "").replace(" ", "")
 
-                    self.client_state['step'] = 'busy_printing'
-                    await self.send_message('status', {'state': 'busy_printing'})
-
-                    success = await database_sync_to_async(print_document)(
-                        self.scope,
-                        self.client_state.get("selected_doc_type"),
-                        issue_date_str,
-                        self.client_state.get('printer_name')
-                    )
-
-                    if success:
-                        # 프린트 완료 후 잠시 대기
-                        await asyncio.sleep(10)
-                        # 발급 완료 안내 시 마이크 비활성 유지
-                        await self.send_tts_with_tracking(FINAL_ISSUE_PROMPT, activate_mic=False)
-                        self.client_state['step'] = 'await_additional_issue'
-                        await self.send_message('status', {'state': 'listening'})
-
-
-                    else:
-                        await self.send_tts_with_tracking("발급 중 오류가 발생했습니다. 다시 시도해주세요.")
-                        self.client_state['step'] = 'date_selection'
-                        await self.send_message('status', {'state': 'listening'})
+                # ✅ 종료 명령 처리
+                if any(k in t for k in ["종료", "그만", "끝", "안해", "취소"]):
+                    self.logger.info("🛑 사용자가 종료 요청함 — 대화 종료")
+                    
+                    # 마이크는 이미 TTS 중 자동 off 상태
+                    await self.send_tts_with_tracking("이용해주셔서 감사합니다. 안녕히 가세요.")
+                    
+                    # 대화 상태를 idle로 변경
+                    self.client_state["step"] = "idle"
+                    await self.send_message("status", {"state": "idle"})
                     return
 
-                await self.send_tts_with_tracking("유효한 날짜를 말씀해주세요.")
-                self.client_state['step'] = 'date_selection'
-                return
+                selected_date = self.get_valid_date_from_text(text)
+                if not selected_date:
+                    await self.send_tts_with_tracking("날짜를 다시 말씀해주세요.")
+                    return
+
+                self.client_state["selected_date"] = selected_date
+                logger.info(f"✅ 날짜 선택 완료: {selected_date}")
+
+                await self.handle_print_request()
+                self.client_state["step"] = "await_additional_issue"
+
+                return  # ✅ 여기서 종료 (더 이상 유효한 날짜 멘트 출력 안 함)
+
+
+
 
             # ✅ 추가 발급 요청 단계
-            if current_step == 'await_additional_issue':
-                await self.handle_additional_issue_request(text)
+            if current_step == "await_additional_issue":
+                t = (text or "").replace(" ", "")
+                logger.info(f"📥 추가 서류 단계 입력 처리: {t}")
+
+                # 종료 처리
+                if any(k in t for k in ["종료", "그만", "끝", "안해", "없어", "없습니다"]):
+                    await self.send_tts_with_tracking("이용해주셔서 감사합니다. 안녕히 가세요.")
+                    self.client_state["step"] = "idle"
+                    await self.send_message("status", {"state": "idle"})
+                    return
+
+                # ✅ 새 서류 발급 요청이면 기존 issue 흐름 호출
+                elif any(k in t for k in ["영수증", "처방전", "확인서", "진료확인서", "진료영수증"]):
+                    logger.info(f"🔁 추가 서류 발급 요청 감지: {text}")
+                    analysis = await self.analyze_input_with_context(t)
+                    await self.handle_analysis_result(analysis, t)
+
+                    # ✅ TTS 완료 후 발급 확인 단계로 전환
+                    await asyncio.sleep(2.5)  # TTS 재생이 끝날 때까지 충분히 대기
+                    self.client_state["step"] = "waiting_for_issue_confirmation"
+                    logger.debug("📄 추가 서류 발급 후 waiting_for_issue_confirmation 단계로 전환 완료")
+                    return
+
+
+                # 그 외 입력 처리
+                await self.send_tts_with_tracking("원하시는 서류명을 다시 말씀해주세요. 없으면 '종료'라고 말씀해주세요.")
                 return
+
 
             # ✅ 기본 GPT 분석 흐름
             analysis = await self.analyze_input_with_context(text)

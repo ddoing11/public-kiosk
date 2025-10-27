@@ -9,7 +9,7 @@ https://docs.djangoproject.com/en/5.2/topics/settings/
 For the full list of settings and their values, see
 https://docs.djangoproject.com/en/5.2/ref/settings/
 """
-
+import sys
 from pathlib import Path
 import os
 from dotenv import load_dotenv
@@ -203,39 +203,20 @@ LOG_DIR.mkdir(exist_ok=True)  # 디렉토리 생성
 LOGGING = {
     'version': 1,
     'disable_existing_loggers': False,
-    'formatters': {
-        'verbose': {
-            'format': '{levelname} {asctime} {module} {process:d} {thread:d} {message}',
-            'style': '{',
-        },
-        'simple': {
-            'format': '{levelname} {message}',
-            'style': '{',
-        },
-    },
     'handlers': {
-        'file': {
-            'level': 'INFO',
-            'class': 'logging.FileHandler',
-            'filename': LOG_DIR / 'kiosk.log',  # Path 객체 방식
-            'formatter': 'verbose',
-        },
         'console': {
-            'level': 'DEBUG',
             'class': 'logging.StreamHandler',
-            'formatter': 'simple',
+            'stream': sys.stdout,   # ✅ UTF-8 스트림
+        },
+        'file': {
+            'class': 'logging.FileHandler',
+            'filename': 'logs/kiosk.log',
+            'encoding': 'utf-8',    # ✅ UTF-8 로그 파일
         },
     },
-    'loggers': {
-        'kiosk': {
-            'handlers': ['file', 'console'],
-            'level': os.environ.get('LOG_LEVEL', 'INFO'),
-            'propagate': False,
-        },
-        'django': {
-            'handlers': ['console'],
-            'level': 'INFO',
-        },
+    'root': {
+        'handlers': ['console', 'file'],
+        'level': 'DEBUG',
     },
 }
 
@@ -246,3 +227,15 @@ KIOSK_SECURITY = {
     'LOG_PERSONAL_INFO': False,  # 개인정보 로깅 금지
     'MASK_LOG_CHARS': 2,  # 로그에서 보여줄 문자 수
 }
+
+import sys
+import logging
+
+logging.basicConfig(
+    level=logging.INFO,
+    handlers=[
+        logging.StreamHandler(sys.stdout),
+        logging.FileHandler("app.log", encoding="utf-8")
+    ],
+    format="%(levelname)s %(message)s"
+)

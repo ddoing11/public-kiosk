@@ -53,22 +53,15 @@ def normalize_date_input(text: str) -> str:
         print(f"❌ 날짜 변환 오류: {e}")
         logger.error(f"날짜 변환 오류: {e}")
 
-    print(f"❌ 날짜 변환 실패, 원본 반환: '{text}'")
-    return text
+    print(f"❌ 날짜 변환 실패, 원본 반환 안 함: '{text}'")
+    return None # [수정] 실패 시 text가 아닌 None 반환
 
-def find_document_path(doc_type, issue_date):
+def find_document_path(patient_id, doc_type, issue_date):
     """
     주어진 문서 종류(doc_type)와 날짜(issue_date)에 맞는 파일 경로를 찾아 반환.
-    폴더 구조:
-        documents/Medical_Certificate_DOC/
-        documents/Medical_receipt_DOC/
-    파일명 예시:
-        010215-3456789_certificate_20241027.pdf
-        010203-3456789_receipt_20250716.pdf
     """
     base_dir = os.path.join(settings.BASE_DIR, "documents")
 
-    # ✅ 문서 종류에 따라 하위 폴더 경로 결정
     if "확인서" in doc_type or "certificate" in doc_type:
         target_dir = os.path.join(base_dir, "Medical_Certificate_DOC")
         keyword = "certificate"
@@ -76,47 +69,74 @@ def find_document_path(doc_type, issue_date):
         target_dir = os.path.join(base_dir, "Medical_receipt_DOC")
         keyword = "receipt"
     else:
-        return None  # 알 수 없는 문서 유형
-
-    # 해당 폴더가 존재하지 않으면 종료
-    if not os.path.exists(target_dir):
+        logger.warning(f"[find_document_path] 알 수 없는 문서 유형: {doc_type}")
         return None
 
-    # ✅ 파일명에 날짜가 포함된 PDF 탐색
+    if not os.path.exists(target_dir):
+        logger.error(f"[find_document_path] 폴더 없음: {target_dir}")
+        return None
+
+    logger.info(f"[find_document_path] 검색 시작 → 폴더: {target_dir}")
+    logger.info(f" - 환자번호: {patient_id}")
+    logger.info(f" - 문서유형: {doc_type} (키워드: {keyword})")
+    logger.info(f" - 날짜: {issue_date} → 비교용: {issue_date.replace('-', '')}")
+
+    found_path = None
     for file in os.listdir(target_dir):
-        if file.endswith(".pdf") and keyword in file and issue_date.replace("-", "") in file:
-            return os.path.join(target_dir, file)
+        if not file.endswith(".pdf"):
+            continue
 
-    # 파일을 찾지 못한 경우
-    return None
+        full_path = os.path.join(target_dir, file)
+        match_patient = patient_id and patient_id in file
+        match_keyword = keyword in file
+        match_date = issue_date.replace("-", "") in file
 
+        logger.info(
+            f"  [검사] {file} → "
+            f"환자번호: {match_patient}, 키워드: {match_keyword}, 날짜: {match_date}"
+        )
 
-def print_document(scope, doc_type, issue_date, print_queue_name=None):
+        if match_patient and match_keyword and match_date:
+            found_path = full_path
+            logger.info(f"✅ 일치 파일 발견: {found_path}")
+            break
+
+    if not found_path:
+        logger.warning(
+            f"⚠️ 일치하는 파일 없음 (환자번호={patient_id}, doc_type={doc_type}, date={issue_date})"
+        )
+
+    return found_path
+
+def print_document(_scope, patient_id, doc_type, issue_date, print_queue_name=None):
     if not print_queue_name:
         logger.info("[프린터] print_queue_name이 None → 기본 프린터로 설정됨")
 
-    logger.info(f"[발급요청] {doc_type} ({issue_date}) (Queue: {print_queue_name or 'Default printer'})")
+    # 이제 'patient_id', 'doc_type', 'issue_date' 변수에 올바른 값이 들어갑니다.
+    logger.info(f"[발급요청] {patient_id} / {doc_type} ({issue_date}) (Queue: {print_queue_name or 'Default printer'})")
+    found_file = find_document_path(patient_id, doc_type, issue_date)
 
-    found_file = find_document_path(doc_type, issue_date)
     if not found_file:
-        logger.warning(f"[경고] 파일을 찾을 수 없음: {doc_type}, {issue_date}")
-        return ("not_found", None)
-
+        logger.warning(f"[경고] 파일을 찾을 수 없음: {patient_id}, {doc_type}, {issue_date}")
+        return ("not_found", None) # 👈 이 return 문이 필수
+    
     # ✅ SumatraPDF 실행 파일 경로 수정 (프로젝트 내부 경로 사용)
     sumatra_path = os.path.join(settings.BASE_DIR, "sumatra", "SumatraPDF-3.5.2-64.exe")
 
-    if os.path.exists(sumatra_path):
-        if print_queue_name:
-            os.system(f'"{sumatra_path}" -print-to "{print_queue_name}" "{found_file}"')
+    try:
+        if os.path.exists(sumatra_path):
+            if print_queue_name:
+                os.system(f'"{sumatra_path}" -print-to "{print_queue_name}" "{found_file}"')
+            else:
+                subprocess.run([sumatra_path, "-print-to-default", found_file], check=True)
+            logger.info(f"프린트 명령 전송 완료: {found_file} → {print_queue_name or '기본 프린터'}")
+            return ("success", found_file)
         else:
-            # ✅ 기본 프린터로 출력
-            subprocess.run([sumatra_path, "-print-to-default", found_file], check=True)
-
-        logger.info(f"프린트 명령 전송 완료: {found_file} → {print_queue_name or '기본 프린터'}")
-        return ("success", found_file)
-    else:
-        logger.error(f"SumatraPDF 실행 파일 없음: {sumatra_path}")
-        return ("print_failed", None)
+            logger.error(f"SumatraPDF 실행 파일 없음: {sumatra_path}")
+            return ("print_failed", None)
+    except Exception as e: # SumatraPDF 실행 관련 예외 처리
+        logger.error(f"SumatraPDF 프린트 실패: {e}")
+        return ("print_failed", str(e))
 
 
 class KioskWebSocketConsumer(AsyncWebsocketConsumer):
@@ -188,7 +208,7 @@ class KioskWebSocketConsumer(AsyncWebsocketConsumer):
         text = text.strip().lower()
         current_step = self.client_state.get('step', 'idle')
         logger.info(f"STT Result: '{text}', State: '{current_step}'")
-        
+
         if current_step == 'confirming_user':
             if any(word in text for word in ['본인', '확인', '맞', '네', '예']):
                 patient = self.client_state.get('patient_to_confirm')
@@ -217,27 +237,56 @@ class KioskWebSocketConsumer(AsyncWebsocketConsumer):
         await self.send(text_data=json.dumps(message))
 
     async def handle_print_request(self, data):
-        """프린트 요청 처리 (Kiosk Consumer 버전 - 상태 변경 로직 다름 주의)"""
-        # (이 코드는 ServiceWebSocketConsumer의 수정사항을 반영해야 함)
-        # (우선 기존 로직 유지, 필요시 Service 버전 참고하여 수정)
+        """프린트 요청 처리 (Kiosk Consumer 버전 - 독립 실행되도록 수정)"""
         try:
-            patient_id = data.get('patient_id')
+            # [수정] Kiosk Consumer는 self.selected_patient가 없으므로 data에서 직접 가져옵니다.
+            patient_id = data.get('patient_id') 
             doc_type = data.get('doc_type')
-            issue_date = data.get('issue_date')
+            issue_date_text = data.get('issue_date') # "7월 16일" (원본)
             consumer_name = self.__class__.__name__
-            logger.info(f"🖨️ 출력 요청 ({consumer_name}): {patient_id}, {doc_type}, {issue_date}")
+            
+            # [수정] 날짜 변환
+            normalized_date = normalize_date_input(issue_date_text)
+            
+            logger.info(f"🖨️ 출력 요청 ({consumer_name}): {patient_id}, {doc_type}, {normalized_date} (원본: {issue_date_text})")
 
-            if not all([patient_id, doc_type, issue_date]):
-                await self.send_message('tts.text', {'text': '출력할 정보를 확인할 수 없습니다.'})
+            if not all([patient_id, doc_type, normalized_date]):
+                # ‼️ [수정] 직접 send_message 대신 헬퍼 함수 사용
+                # await self.send_message('tts.text', {'text': '출력 정보를 확인하거나 날짜를 인식할 수 없습니다.'})
+                await self.send_tts_and_reactivate_mic('출력 정보를 확인하거나 날짜를 인식할 수 없습니다.', 'listening')
                 return
 
-            status, detail = await database_sync_to_async(print_document)(patient_id, doc_type, issue_date)
+            # [수정] 헬퍼 함수 대신 직접 send_message 사용
+            await self.send_message('tts.text', {'text': f'{issue_date_text}의 {doc_type} 인쇄를 시작합니다. 잠시만 기다려주세요.'})
 
+            # [수정] 변환된 normalized_date를 인쇄 함수로 전달
+            status, detail = await database_sync_to_async(print_document)(
+                self.scope,                 # ✅ 첫 번째 인자는 항상 self.scope
+                patient_id,                 # 두 번째: patient_id
+                doc_type,                   # 세 번째: 문서 종류
+                normalized_date,            # 네 번째: 날짜
+                self.client_state.get('printer_name')  # (선택) 프린터 이름
+            )
             final_tts_message = ""
+
             if status == "success":
-                await self.send_message('tts.text', {'text': f'{issue_date}의 {doc_type}을 출력합니다.'})
+                # ----------------------------------------------------
+                # ‼️ [추가] Kiosk Consumer에도 10초 대기 추가
+                # ----------------------------------------------------
+                await asyncio.sleep(10.0)
+                # ----------------------------------------------------
+                
+                # [수정] issue_date_text 사용 (기존 코드 유지)
+                await self.send_message('tts.text', {'text': f'{issue_date_text}의 {doc_type} 출력이 완료되었습니다.'})
+                await asyncio.sleep(0.5) # Pause between messages
+                await self.send_tts_without_mic_reactivation('더 필요하신 서류 있으세요?')
                 await asyncio.sleep(0.5)
-                final_tts_message = '출력이 완료되었습니다.'
+                # Final prompt, then reactivate mic and set state
+                await self.send_tts_and_reactivate_mic(
+                    "필요하신 서류를 말씀해주세요. 없으시면 종료 라고 말씀해주세요.",
+                    'await_additional_request' # New state
+                )
+
             elif status == "not_found":
                 final_tts_message = '서류 파일을 찾을 수 없습니다. 날짜를 다시 확인해주세요.'
                 logger.error(f"파일 찾기 실패 ({consumer_name}): {detail}")
@@ -252,7 +301,6 @@ class KioskWebSocketConsumer(AsyncWebsocketConsumer):
             consumer_name = self.__class__.__name__
             logger.error(f"출력 중 오류 ({consumer_name}): {e}")
             await self.send_message('tts.text', {'text': '출력 처리 중 오류가 발생했습니다.'})
-
 
 class ServiceWebSocketConsumer(AsyncWebsocketConsumer):
     """GPT 기반 스마트 서류 인식 Consumer (인쇄 흐름 개선됨)"""
@@ -307,11 +355,16 @@ class ServiceWebSocketConsumer(AsyncWebsocketConsumer):
 
             # ✅ TTS 완료 신호 처리
             if message_type == 'tts.complete':
-                # self.logger.info("TTS 완료 신호 수신") # 로그가 너무 많으면 주석 처리
+                self.logger.info("🔊 TTS 완료 신호 수신 — 마이크 재활성화 처리")
                 self.tts_completed_time = asyncio.get_event_loop().time()
-                # 여기에 mic.on 로직 추가 가능 (필요시)
-                # await asyncio.sleep(0.2)
-                # await self.send_message("mic.on")
+
+                now = asyncio.get_event_loop().time()
+                if (now - getattr(self, "last_mic_on_ts", 0)) >= getattr(self, "mic_on_min_interval", 0.5):
+                    await asyncio.sleep(0.2)
+                    await self.send_message("mic.on")
+                    self.last_mic_on_ts = asyncio.get_event_loop().time()
+                else:
+                    self.logger.info("mic.on 디바운스에 의해 생략")
                 return
 
             if message_type == 'voice.input' or message_type == 'stt.result': # stt.result도 처리
@@ -341,26 +394,33 @@ class ServiceWebSocketConsumer(AsyncWebsocketConsumer):
         self.client_state['step'] = 'printing' # Indicate printing is in progress
 
         try:
-            patient_id = self.selected_patient.get("patient_id") if self.selected_patient else data.get('patient_id')
+            patient_id = data.get('patient_id')
             doc_type = data.get('doc_type')
-            issue_date = data.get('issue_date') # Keep original user input for TTS
+            issue_date_text = data.get('issue_date') # "7월 16일" (원본)
             consumer_name = self.__class__.__name__
-            logger.info(f"🖨️ 출력 요청 ({consumer_name}): {patient_id}, {doc_type}, {issue_date}")
 
-            if not all([patient_id, doc_type, issue_date]):
-                # Send error TTS and go back to listening
-                await self.send_tts_and_reactivate_mic('출력할 정보를 확인할 수 없습니다. 다시 말씀해주세요.', 'listening')
+            # [수정] 날짜 변환
+            normalized_date = normalize_date_input(issue_date_text)
+            
+            logger.info(f"🖨️ 출력 요청 ({consumer_name}): {patient_id}, {doc_type}, {normalized_date} (원본: {issue_date_text})")
+
+            if not all([patient_id, doc_type, normalized_date]):
+                await self.send_message('tts.text', {'text': '출력 정보를 확인하거나 날짜를 인식할 수 없습니다.'})
                 return
 
-            # Initial TTS - Use original date input for clarity
-            # Don't reactivate mic yet
-            await self.send_tts_without_mic_reactivation(f'{issue_date}의 {doc_type} 인쇄를 시작합니다. 잠시만 기다려주세요.')
+            # [수정] 변환된 normalized_date로 인쇄
+            status, detail = await database_sync_to_async(print_document)(
+                self.scope,
+                patient_id,
+                doc_type,
+                normalized_date,
+                self.client_state.get('printer_name')
+            )
 
-            # Call the synchronous print function in a thread
-            status, detail = await database_sync_to_async(print_document)(patient_id, doc_type, issue_date)
+            final_tts_message = ""
 
-            # --- Handle result ---
             if status == "success":
+                await self.send_message('tts.text', {'text': f'{issue_date_text}의 {doc_type}을 출력합니다.'}) # TTS는 원본 텍스트
                 # Send completion TTS sequence and ask for next action
                 await self.send_tts_without_mic_reactivation('인쇄가 완료되었습니다.')
                 await asyncio.sleep(0.5) # Pause between messages
@@ -396,7 +456,9 @@ class ServiceWebSocketConsumer(AsyncWebsocketConsumer):
 
     async def start_voice_guidance(self):
         guidance_text = "진료확인서, 처방전, 진료영수증 중 원하는 서류를 말씀해주세요."
-        await self.send_tts_with_tracking(guidance_text) # send_tts_with_tracking 사용
+        # [수정] 새 헬퍼 함수 사용
+        await self.send_tts_and_reactivate_mic(guidance_text, 'listening')
+
 
     # --- (analyze_input_with_context, fallback_analysis, handle_analysis_result, handle_issue_confirmation - 이전과 동일) ---
     CONTENT_QUERY_KWS = ["포함", "들어가", "기재", "내용", "적혀", "들어있", "표시되", "성명", "주민번호", "주소", "비용", "기간", "유효", "차이", "언제", "왜", "방법"]
@@ -467,14 +529,16 @@ class ServiceWebSocketConsumer(AsyncWebsocketConsumer):
 
     async def handle_analysis_result(self, analysis: dict, original_text: str):
         mode = analysis.get("mode", "other")
+
         doc_type = analysis.get("document_type")
         submit_to_analyzed = analysis.get("submit_to")
         explicit_tokens = ["회사", "학교", "보험", "약국", "직장", "병가", "휴가", "결석", "공제", "청구", "보상"]
         explicit_present = any(tok in (original_text or "") for tok in explicit_tokens)
         submit_to = submit_to_analyzed if (explicit_present and submit_to_analyzed not in (None, "null", "기타")) else None
+        
         if mode == "issue":
             if doc_type not in ("진료확인서", "처방전", "진료영수증"):
-                await self.send_tts_with_tracking("어떤 서류를 발급하시겠습니까? 진료확인서, 처방전, 진료영수증 중에서 말씀해주세요.")
+                await self.send_tts_and_reactivate_mic("어떤 서류를 발급하시겠습니까? 진료확인서, 처방전, 진료영수증 중에서 말씀해주세요.", "listening")
                 return
             self.logger.info(f"서류 직접 요청으로 처리: {doc_type} (제출처: {submit_to})")
             await self.send_message("document.recognized", {"document_type": doc_type})
@@ -496,16 +560,18 @@ class ServiceWebSocketConsumer(AsyncWebsocketConsumer):
             self.logger.info("발급 의사 확정 → 날짜 선택")
             self.client_state["step"] = "date_selection"
             await self.send_message("voice.mode", {"allow_short_input": True})
-            await self.send_tts_with_tracking("원하는 날짜를 말씀하시거나 '취소'라고 말씀해주세요.")
+            # [수정] 새 헬퍼 함수 사용
+            await self.send_tts_and_reactivate_mic("원하는 날짜를 말씀하시거나 '취소'라고 말씀해주세요.", "date_selection")
             return
         if any(s in t for s in cancel_synonyms):
             self.logger.info("발급 취소")
             self.client_state["step"] = "listening"
             await self.send_message("voice.mode", {"allow_short_input": False})
-            await self.send_tts_with_tracking("다른 서류가 필요하시면 말씀해주세요.")
+            # [수정] 새 헬퍼 함수 사용
+            await self.send_tts_and_reactivate_mic("다른 서류가 필요하시면 말씀해주세요.", "listening")
             return
-        await self.send_tts_with_tracking("발급 또는 취소라고 정확히 말씀해주세요.")
-
+        # [수정] 새 헬퍼 함수 사용
+        await self.send_tts_and_reactivate_mic("발급 또는 취소라고 정확히 말씀해주세요.", "waiting_for_issue_confirmation")
 
     # ✅ [수정됨] process_voice_input: printing 상태, await_additional_request 상태 추가
     async def process_voice_input(self, text):
@@ -559,15 +625,15 @@ class ServiceWebSocketConsumer(AsyncWebsocketConsumer):
                 patient_id = self.selected_patient.get("patient_id")
                 doc_type = self.client_state.get("selected_doc_type")
 
-                # 입력값이 날짜 형식이 아니면 재요청 (간단한 검증)
-                if not normalize_date_input(text): # 날짜 변환 실패 시 빈 문자열 반환됨
-                     await self.send_tts_with_tracking("날짜를 인식하지 못했습니다. 다시 말씀해주세요.")
-                     return
+                # [수정] 날짜 변환 실패 시
+                if not normalize_date_input(text): # 날짜 변환 실패 시 None 반환
+                    # [수정] 새 헬퍼 함수 사용
+                    await self.send_tts_and_reactivate_mic("날짜를 인식하지 못했습니다. 다시 말씀해주세요.", "date_selection")
+                    return
 
                 await self.send_message('document.print', {
                     'patient_id': patient_id, 'doc_type': doc_type, 'issue_date': text
                 })
-                # Set state to printing temporarily to block subsequent input
                 self.client_state['step'] = 'printing'
                 return
 
@@ -577,14 +643,14 @@ class ServiceWebSocketConsumer(AsyncWebsocketConsumer):
                 self.logger.info(f"🤖 분석 결과: {analysis}")
                 await self.handle_analysis_result(analysis, text)
             else:
-                 logger.warning(f"처리되지 않은 상태({current_step})에서 음성 입력 수신: '{text}'")
-                 await self.send_tts_with_tracking("현재 요청을 처리할 수 없습니다. 잠시 후 다시 시도해주세요.")
-
+                logger.warning(f"처리되지 않은 상태({current_step})에서 음성 입력 수신: '{text}'")
+                # [수정] 새 헬퍼 함수 사용
+                await self.send_tts_and_reactivate_mic("현재 요청을 처리할 수 없습니다. 잠시 후 다시 시도해주세요.", "listening")
 
         except Exception as e:
             self.logger.error(f"음성 입력 처리 오류: {str(e)}")
-            await self.send_tts_with_tracking("오류가 발생했습니다. 다시 말씀해주세요.")
-
+            # [수정] 새 헬퍼 함수 사용
+            await self.send_tts_and_reactivate_mic("오류가 발생했습니다. 다시 말씀해주세요.", "listening")
 
     async def start_smart_consultation(self, user_input, doc_hint=None):
         """스마트 상담 시작"""

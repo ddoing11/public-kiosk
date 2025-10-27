@@ -183,11 +183,25 @@ class KioskWebSocketConsumer(AsyncWebsocketConsumer):
             message_type = data.get('type')
 
             if message_type == 'user.confirmation_start':
-                await self.start_user_confirmation(data.get('patient'))
+    
+                patient_data = data.get('patient')
+                if patient_data:
+                    await self.state_manager.start_user_confirmation(patient_data)
+
+                    # ✅ 본인확인 TTS 재생 후에만 complete 전송
+                    await self.send_message({"type": "tts.complete"})
+
+
             elif message_type == 'stt.result':
                 await self.handle_stt_result(data.get('text', ''))
             elif message_type == 'document.print': # Kiosk Consumer도 print 요청 처리 가능하도록 추가
                 await self.handle_print_request(data)
+
+            elif message_type in ["tts.complete", "audio.tts_playback_complete", "ttscomplete"]:
+                logger.info("[Consumer] 클라이언트 TTS 재생 완료 신호 수신 → Router로 전달")
+                await self.router.handle_message(json.dumps({"type": "tts.complete"}))
+
+
             else:
                 logger.warning(f"Unknown message type: {message_type}")
         except Exception as e:

@@ -96,10 +96,9 @@ class KioskStateManager:
         )
 
     async def start_user_confirmation(self, patient_data):
-        """(v3 신규) 이름 검색 후, 본인 확인 단계 진입"""
         logger.info(f"[StateM] 본인 확인 단계 진입: {patient_data.get('patient_name')}")
         self.state = self.STATE_BUSY
-        self.user_context = patient_data # 임시 저장
+        self.user_context = patient_data
 
         prompt = (
             f"{patient_data.get('patient_name')} 님이 맞으시면 '본인 확인' 또는 '맞아요'라고 말씀해주세요. "
@@ -502,13 +501,15 @@ class KioskStateManager:
     # --- 5. 유틸리티 및 정리 ---
 
     async def notify_tts_playback_complete(self):
-        """(v3 신규) 클라이언트(JS)로부터 TTS 재생 완료 신호를 받음"""
-        logger.debug("[StateM] 클라이언트 TTS 재생 완료 확인.")
-        # TTS 완료 후 BUSY 상태였다면, 원래 기다리던 상태로 돌아가야 함.
-        # 하지만 현재 로직(_play_ding_and_speak)에서 미리 상태를 전환하므로
-        # 이 콜백에서는 BUSY 상태 해제만 확인하는 정도로 충분할 수 있음.
-        # 필요하다면 여기서 self.state가 BUSY인지 확인하고 로깅 추가.
-        pass
+        """(v3 수정) 클라이언트 TTS 재생 완료 시 상태에 따라 마이크 제어"""
+        logger.debug(f"[StateM] TTS 완료 수신. 현재 상태: {self.state}")
+
+        # 본인 확인 안내 TTS가 끝난 뒤 마이크 켜기
+        if self.state == self.STATE_CONFIRMING_USER:
+            await self.send_tts_callback("", step={"type": "mic.on"})
+            logger.info("[StateM] 본인확인 단계 TTS 완료 → mic.on 전송")
+        else:
+            logger.debug("[StateM] TTS 완료 처리 (mic.on 생략)")
 
 
     async def cleanup(self):

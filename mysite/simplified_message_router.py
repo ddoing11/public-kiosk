@@ -40,7 +40,9 @@ class HospitalMessageRouter:
         """
         try:
             data = json.loads(text_data)
-            message_type = data.get('type', '')
+            logger.warning(f"[Router DEBUG] 원문 수신 데이터: {text_data}")
+            message_type = data.get('type', '').strip().lower()
+
             logger.debug(f"[Router] 메시지 수신: {message_type}, 데이터: {data.get('text') or data.get('patient', {}).get('patient_name')}")
 
             if message_type == 'stt.result':
@@ -55,10 +57,15 @@ class HospitalMessageRouter:
                 if patient_data:
                     await self.state_manager.start_user_confirmation(patient_data)
 
-            elif message_type == 'audio.tts_playback_complete':
+            elif  message_type in ['tts.complete', 'audio.tts_playback_complete', 'ttscomplete', 'audio.tts.complete']:
                 # (v3 신규) 클라이언트 TTS 재생 완료 신호
                 logger.debug("[Router] 클라이언트 TTS 재생 완료 신호 수신")
                 await self.state_manager.notify_tts_playback_complete()
+
+            elif message_type in ['tts.complete', 'audio.tts_playback_complete', 'ttscomplete', 'audio.tts.complete']:
+                logger.info("[Router] (v3) TTS 완료 신호 수신 → 상태 관리자에 전달")
+                await self.state_manager.notify_tts_playback_complete()
+
 
             else:
                 logger.warning(f"[Router] 알 수 없는 메시지 타입: {message_type}")

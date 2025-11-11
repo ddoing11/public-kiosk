@@ -57,17 +57,7 @@ class KioskWebSocketConsumer(AsyncWebsocketConsumer):
             data = json.loads(text_data)
             message_type = data.get('type')
 
-            if message_type == 'user.confirmation_start':
-    
-                patient_data = data.get('patient')
-                if patient_data:
-                    await self.state_manager.start_user_confirmation(patient_data)
-
-                    # ✅ 본인확인 TTS 재생 후에만 complete 전송
-                    await self.send_message({"type": "tts.complete"})
-
-
-            elif message_type == 'stt.result':
+            if message_type == 'stt.result':
                 await self.handle_stt_result(data.get('text', ''))
             elif message_type == 'document.print': # Kiosk Consumer도 print 요청 처리 가능하도록 추가
                 await self.handle_print_request(data)
@@ -79,22 +69,10 @@ class KioskWebSocketConsumer(AsyncWebsocketConsumer):
                 await self.send_message("mic.on")
                 return
 
-
             else:
                 logger.warning(f"Unknown message type: {message_type}")
         except Exception as e:
             logger.error(f"Error processing message: {str(e)}")
-
-    async def start_user_confirmation(self, patient):
-        if patient:
-            self.client_state['patient_to_confirm'] = patient
-            self.client_state['step'] = 'confirming_user'
-            confirmation_text = f"{patient.get('patient_name')} 님이 맞으시면, '본인 확인'이라고 말씀해주세요."
-            await self.send_message('tts.text', {'text': confirmation_text})
-            await self.send_message('state.update', {'step': 'confirming_user'})
-            logger.info(f"User confirmation started: {confirmation_text}")
-        else:
-            await self.send_message('error', {'message': "확인할 환자 정보가 없습니다."})
 
     async def handle_stt_result(self, text):
         text = text.strip().lower()
@@ -145,7 +123,9 @@ class KioskWebSocketConsumer(AsyncWebsocketConsumer):
             if not all([patient_id, doc_type, normalized_date]):
                 # ‼️ [수정] 직접 send_message 대신 헬퍼 함수 사용
                 # await self.send_message('tts.text', {'text': '출력 정보를 확인하거나 날짜를 인식할 수 없습니다.'})
-                await self.send_tts_and_reactivate_mic('출력 정보를 확인하거나 날짜를 인식할 수 없습니다.', 'listening')
+                self.client_state['step'] = 'listening'  # 1. 상태 변경
+                await self.send_message('mic.off')       # 2. 마이크 끄기
+                await self.send_tts('출력 정보를 확인하거나 날짜를 인식할 수 없습니다.')
                 return
 
             # [수정] 헬퍼 함수 대신 직접 send_message 사용
@@ -171,13 +151,16 @@ class KioskWebSocketConsumer(AsyncWebsocketConsumer):
                 # [수정] issue_date_text 사용 (기존 코드 유지)
                 await self.send_message('tts.text', {'text': f'{issue_date_text}의 {doc_type} 출력이 완료되었습니다.'})
                 await asyncio.sleep(0.5) # Pause between messages
-                await self.send_tts_without_mic_reactivation('더 필요하신 서류 있으세요?')
+
+                await self.send_message('mic.off')
+                await self.send_tts('더 필요하신 서류 있으세요?')
+                # (mic.on은 receive의 'tts.complete'가 처리)
+
                 await asyncio.sleep(0.5)
-                # Final prompt, then reactivate mic and set state
-                await self.send_tts_and_reactivate_mic(
-                    "필요하신 서류를 말씀해주세요. 없으시면 종료 라고 말씀해주세요.",
-                    'await_additional_request' # New state
-                )
+
+                self.client_state['step'] = 'await_additional_request' # 상태 변경
+                await self.send_message('mic.off')                     # 마이크 끄기
+                await self.send_tts("필요하신 서류를 말씀해주세요. 없으시면 종료 라고 말씀해주세요.")
 
             elif status == "not_found":
                 final_tts_message = '서류 파일을 찾을 수 없습니다. 날짜를 다시 확인해주세요.'
@@ -673,17 +656,6 @@ class ServiceWebSocketConsumer(AsyncWebsocketConsumer):
         elif next_state in ['await_additional_request', 'date_selection', 'waiting_for_issue_confirmation']:
              await self.send_message("voice.mode", {"allow_short_input": True})
 
-        # 딜레이 후 마이크 켜기
-        async def delayed_mic_on_final(wait_time):
-            await asyncio.sleep(wait_time)
-            # 현재 상태가 여전히 마이크를 켜야 하는 상태인지 확인
-            if self.client_state.get('step') == next_state:
-                self.logger.info(f"🎤 최종 안내 후 {wait_time}초 뒤 마이크 활성화 (상태: {next_state})")
-                await self.send_message("mic.on")
-            else:
-                 self.logger.info(f"🎤 마이크 활성화 취소 (상태 변경됨: {self.client_state.get('step')})")
-
-        asyncio.create_task(delayed_mic_on_final(delay))
 
     # ✅ 기존 send_tts_with_tracking 은 삭제하고 헬퍼 함수 사용으로 통일
     # async def send_tts_with_tracking(self, text): ...

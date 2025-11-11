@@ -1,4 +1,3 @@
-import asyncio
 import json
 import re
 import os
@@ -9,8 +8,6 @@ from typing import Optional
 from django.utils import timezone
 from django.conf import settings
 from openai import OpenAI
-from asgiref.sync import sync_to_async
-from mysite.models import MedicalReceipt, Prescription, Medical_Certificate
 
 # ==============================
 # 🔧 로깅 UTF-8 환경 설정
@@ -128,13 +125,6 @@ async def get_gpt_streaming_response(user_input, system_prompt=SYSTEM_PROMPT):
 # ==============================
 # 🔹 전처리 / 유틸 함수
 # ==============================
-def clean_voice_input(text):
-    if not text:
-        return ""
-    text = re.sub(r'[.,?!]', '', text).strip()
-    for phrase in ['음', '어', '그', '저기', '그거']:
-        text = text.replace(phrase + ' ', '').replace(' ' + phrase, '')
-    return text
 
 def is_greeting(text):
     greetings = ['안녕', '안녕하세요', '반갑', '처음', '시작']
@@ -195,11 +185,6 @@ def convert_date_to_db_format(date_text: str) -> Optional[str]:
 def is_cancel_response(text: str) -> bool:
     t = (text or "").lower().replace(" ", "")
     return any(k in t for k in ["취소", "그만", "안해", "중단", "종료", "하지마"])
-
-def is_issue_response(text: str) -> bool:
-    t = (text or "").lower().replace(" ", "")
-    issue_words = ["발급", "출력", "진행", "해줘", "해주세요", "출력해", "인쇄", "프린트", "8급", "팔급"]
-    return any(word in t for word in issue_words)
 
 # ==============================
 # 📂 문서 파일 경로 탐색 함수 (비동기 안전)

@@ -1,0 +1,177 @@
+{% load static %}
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>병원 서류 출력 서비스</title>
+
+  <link rel="stylesheet" href="/static/css/kiosk.css">
+  <script type="module" src="/static/js/voice_socket_main.js"></script>
+  </head>
+<body>
+    <header class="header">
+        <div class="header-content">
+            <div class="header-title">
+                <svg class="hospital-icon" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                          d="M19 21V5a2 2 0 00-2-2H7a2 2 0 00-2 2v16m14 0h2m-2 0h-5m-9 0H3m2 0h5M9 7h1m-1 4h1m4-4h1m-1 4h1m-5 10v-5a1 1 0 011-1h2a1 1 0 011 1v5m-4 0h4"/>
+                </svg>
+                <h1>병원 서류 출력 서비스</h1>
+            </div>
+            <p class="header-subtitle">먼저 본인 확인을 진행해주세요</p>
+        </div>
+    </header>
+
+    <div class="status-section" style="text-align: center; padding: 10px; background-color: #f0f0f0; margin-bottom: 15px;">
+        <p id="status-bar">상태 메시지 로딩 중...</p>
+    </div>
+
+    <div class="voice-control-section">
+        <div class="voice-control-container">
+            <button id="voiceToggleBtn" class="voice-toggle-btn">
+                <svg class="mic-icon" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                          d="M19 11a7 7 0 01-7 7m0 0a7 7 0 01-7-7m7 7v4m0 0H8m4 0h4m-4-8a3 3 0 01-3-3V5a3 3 0 116 0v6a3 3 0 01-3 3z"/>
+                </svg>
+                <svg class="mic-off-icon hidden" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                          d="M5.586 15H4a1 1 0 01-1-1v-4a1 1 0 011-1h1.586l4.707-4.707C10.923 3.663 12 4.109 12 5v14c0 .891-1.077 1.337-1.707.707L5.586 15z"/>
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                          d="M17 14l2-2m0 0l2-2m-2 2l-2-2m2 2l2 2"/>
+                </svg>
+                <span id="voiceBtnText">음성으로 입력하기</span>
+            </button>
+        </div>
+    </div>
+
+    <div id="voiceFeedback" class="voice-feedback hidden">
+        <div class="voice-feedback-content">
+            <div class="voice-indicator">
+                <div class="voice-bar"></div>
+                <div class="voice-bar"></div>
+                <div class="voice-bar"></div>
+                <div class="voice-bar"></div>
+            </div>
+            <div class="voice-transcript-container">
+                <p class="voice-status">듣고 있습니다...</p>
+                <p id="voiceTranscript" class="voice-transcript">주민등록번호를 말씀해주세요</p>
+            </div>
+        </div>
+    </div>
+
+     <main class="main-content">
+    <div class="content-box">
+      <div class="content-header">
+        <div class="check-icon-wrapper">
+          <svg class="check-icon" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="3" d="M5 13l4 4L19 7" />
+          </svg>
+        </div>
+        <h2 class="content-title">주민번호로 신원확인</h2>
+        <p class="content-subtitle">주민번호를 입력해주세요</p>
+      </div>
+
+
+      <form id="birthForm" method="POST" action="/kiosk/main/">
+        {% csrf_token %}
+        <div class="id-input-section">
+          <div class="id-number-display">
+            <div class="id-number-group">
+              {% for i in "123456" %}
+              <input type="text" class="id-digit" maxlength="1" readonly data-index="{{ forloop.counter0 }}">
+              {% endfor %}
+            </div>
+            <div class="id-separator">-</div>
+            <div class="id-number-group">
+              {% for i in "1234567" %}
+              <input type="text" class="id-digit" maxlength="1" readonly data-index="{{ forloop.counter|add:5 }}">
+              {% endfor %}
+            </div>
+          </div>
+
+          <div class="progress-container">
+            <div class="progress-bar">
+              <div id="progressFill" class="progress-fill"></div>
+            </div>
+          </div>
+
+           <div class="number-pad-wrapper">
+            <div class="number-pad">
+              <button type="button" class="number-btn" data-number="1">1</button>
+              <button type="button" class="number-btn" data-number="2">2</button>
+              <button type="button" class="number-btn" data-number="3">3</button>
+              <button type="button" class="number-btn" data-number="4">4</button>
+              <button type="button" class="number-btn" data-number="5">5</button>
+              <button type="button" class="number-btn" data-number="6">6</button>
+              <button type="button" class="number-btn" data-number="7">7</button>
+              <button type="button" class="number-btn" data-number="8">8</button>
+              <button type="button" class="number-btn" data-number="9">9</button>
+              <div class="number-pad-empty"></div>
+              <button type="button" class="number-btn" data-number="0">0</button>
+              <button type="button" id="deleteBtn" class="delete-btn">
+                <svg class="delete-icon" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                        d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+                </svg>
+              </button>
+            </div>
+          </div>
+
+          <div class="action-buttons">
+            <button type="reset" id="resetBtn" class="reset-btn">다시 입력</button>
+            <button type="submit" id="birthSubmitBtn" class="search-btn">1차 검색</button>
+          </div>
+        </div>
+      </form>
+    </div>
+  </main>
+
+    <footer class="footer">
+        <div class="footer-content">
+            <div class="footer-item">
+                <div class="footer-icon">
+                    <svg fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                              d="M19 11a7 7 0 01-7 7m0 0a7 7 0 01-7-7m7 7v4m0 0H8m4 0h4m-4-8a3 3 0 01-3-3V5a3 3 0 116 0v6a3 3 0 01-3 3z"/>
+                    </svg>
+                </div>
+                <p>음성으로 숫자를 말하거나</p>
+            </div>
+            <div class="footer-item">
+                <div class="footer-icon">
+                    <svg fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                              d="M15 15l-2 5L9 9l11 4-5 2zm0 0l5 5M7.188 2.239l.777 2.897M5.136 7.965l-2.898-.777M13.95 4.05l-2.122 2.122m-5.657 5.656l-2.12 2.122"/>
+                    </svg>
+                </div>
+                <p>화면의 숫자 버튼을 터치하세요</p>
+            </div>
+            <div class="footer-item">
+                <div class="footer-icon">
+                    <svg fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                              d="M15.536 8.464a5 5 0 010 7.072m2.828-9.9a9 9 0 010 12.728M5.586 15H4a1 1 0 01-1-1v-4a1 1 0 011-1h1.586l4.707-4.707C10.923 3.663 12 4.109 12 5v14c0 .891-1.077 1.337-1.707.707L5.586 15z"/>
+                    </svg>
+                </div>
+                <p>음성 안내를 들으실 수 있습니다</p>
+            </div>
+        </div>
+    </footer>
+
+    <div id="confirmationModal" class="modal">
+        <div class="modal-content">
+            <span class="close-btn">&times;</span>
+            <h2 id="modalTitle">본인 확인이 필요합니다</h2>
+            <p id="confirmationText" style="font-size: 1.5rem; margin-top: 20px; margin-bottom: 30px;">OOO 님이 맞으신가요?</p>
+            <div class="modal-actions">
+                <button class="modal-btn confirm-btn">본인 확인</button>
+                <button class="modal-btn cancel-btn">취소</button>
+            </div>
+            <p class="voice-instruction" style="color: gray; font-size: 1.1rem; margin-top: 15px;">"본인확인" 또는 "취소"라고 말씀해주세요.</p>
+        </div>
+    </div>
+
+    <script type="module" src="/static/js/voice_socket_main.js"></script>
+</body>
+</html>

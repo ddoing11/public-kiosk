@@ -1,0 +1,81 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>병원 서류 출력 키오스크 - 서비스 선택</title>
+
+    <link rel="stylesheet" href="/static/css/services.css">  <!-- css 파일 분리-->
+
+</head>
+<body>
+
+    <!-- 음성 인식용 라이브러리 및 JS 연결 -->
+    <script defer src="https://aka.ms/csspeech/jsbrowserpackageraw"></script>
+    <script type="module" src="/static/js/services.js"></script>
+
+    <!-- 💡 전체 콘텐츠를 감싸는 박스 -->
+    <body class="document-selection-page">
+    <div class="container">
+
+        <!-- 🏷️ 상단 타이틀 -->
+        <div class="header">
+            <h1>🏥 서류 선택</h1>
+            <p>발급받으실 서류를 선택해주세요</p>
+        </div>
+
+        <!-- 👤 환자 정보 표시 영역 (선택 후 표시됨) -->
+        <div id="patient-info-display"></div>
+
+        <!-- 🎙️ 음성 입력 섹션 -->
+        <div class="voice-section">
+            <h2 id="voice-section-title">🎤 음성으로 서류 선택 또는 상담</h2>
+            <div class="mic-indicator" id="mic-indicator">🎤</div>
+            <div class="voice-status" id="voice-status">음성 인식 준비 중...</div>
+            <div class="loading-spinner" id="loading-spinner"></div>
+
+            <!-- 🤖 GPT 응답 표시 박스 -->
+            <div class="gpt-response" id="gpt-response" style="display: none;">
+                <h4 style="margin-top:0;">💬 AI 상담원</h4>
+                <div id="gpt-content" style="white-space: pre-wrap;"></div>
+            </div>
+        </div>
+
+        <!-- 📂 서비스 선택 카드 영역 -->
+        <div class="services-grid">
+            <div class="service-card" data-service="진료확인서">
+                <div class="icon">📄</div>
+                <div class="title">진료확인서</div>
+            </div>
+            <div class="service-card" data-service="처방전">
+                <div class="icon">💊</div>
+                <div class="title">처방전</div>
+            </div>
+            <div class="service-card" data-service="진료영수증">
+                <div class="icon">🧾</div>
+                <div class="title">진료영수증</div>
+            </div>
+            <div class="service-card" data-service="상담">
+                <div class="icon">💬</div>
+                <div class="title">음성 상담</div>
+            </div>
+        </div>
+
+        <!-- 📊 DB 조회 결과 영역 (카드 선택 후 표시됨) -->
+        <div class="db-results" id="db-results">
+            <h3>📊 조회 결과</h3>
+            <div class="result-table" id="result-table"></div>
+        </div>
+
+        <!-- 🔙 이전 버튼 -->
+        <div class="action-buttons">
+            <button class="btn btn-secondary" onclick="window.location.href='/kiosk/main/'">← 이전으로</button>
+        </div>
+
+        <!-- ⚙️ 시스템 상태 표시 -->
+        <div class="status-bar" id="status-bar">
+            시스템 준비 중...
+        </div>
+    </div>
+</body>
+</html>

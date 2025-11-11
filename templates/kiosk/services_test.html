@@ -1,0 +1,154 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>병원 서류 테스트 페이지</title>
+  <link rel="stylesheet" href="/static/css/services.css">
+  <style>
+    /* 마이크 버튼 추가용 */
+    #mic-button {
+      width: 80px;
+      height: 80px;
+      border-radius: 50%;
+      background: #28a745;
+      color: white;
+      font-size: 2rem;
+      border: none;
+      cursor: pointer;
+      margin: 20px auto;
+      display: block;
+    }
+  </style>
+</head>
+<body class="document-selection-page">
+
+  <div class="container">
+    <div class="header">
+      <h1>🏥 서류 선택 (테스트)</h1>
+      <p>카드를 클릭하거나 마이크 버튼을 눌러 테스트해보세요</p>
+    </div>
+
+    <div id="patient-info-display"></div>
+
+    <div class="voice-section">
+      <h2 id="voice-section-title">🎤 음성 입력 테스트</h2>
+      <button id="mic-button">🎤</button>
+      <div class="voice-status" id="voice-status">대기 중...</div>
+      <div class="loading-spinner" id="loading-spinner"></div>
+      <div class="gpt-response" id="gpt-response" style="display:none;">
+        <h4>💬 AI 응답</h4>
+        <div id="gpt-content"></div>
+      </div>
+    </div>
+
+    <div class="services-grid">
+      <div class="service-card" data-service="진료확인서">
+        <div class="icon">📄</div>
+        <div class="title">진료확인서</div>
+      </div>
+      <div class="service-card" data-service="처방전">
+        <div class="icon">💊</div>
+        <div class="title">처방전</div>
+      </div>
+      <div class="service-card" data-service="진료영수증">
+        <div class="icon">🧾</div>
+        <div class="title">진료영수증</div>
+      </div>
+      <div class="service-card" data-service="상담">
+        <div class="icon">💬</div>
+        <div class="title">음성 상담</div>
+      </div>
+    </div>
+
+    <div class="db-results" id="db-results">
+      <h3>📊 조회 결과</h3>
+      <div class="result-table" id="result-table"></div>
+    </div>
+
+    <div class="status-bar" id="status-bar">로컬 테스트 중</div>
+  </div>
+
+  <script>
+    // 기본 UI 업데이트 함수
+    function updateVoiceStatus(msg) {
+      document.getElementById('voice-status').textContent = msg;
+    }
+
+    function updateStatus(msg) {
+      document.getElementById('status-bar').textContent = msg;
+    }
+
+    function selectCard(serviceName) {
+      document.querySelectorAll('.service-card').forEach(card => {
+        card.classList.remove('selected');
+      });
+      const card = document.querySelector(`[data-service="${serviceName}"]`);
+      if (card) {
+        card.classList.add('selected');
+      }
+    }
+
+    function displayResults(results) {
+      const container = document.getElementById('result-table');
+      const section = document.getElementById('db-results');
+      if (!results || results.length === 0) {
+        container.innerHTML = '<p>조회된 결과가 없습니다.</p>';
+        section.classList.add('show');
+        return;
+      }
+
+      let html = '<table><thead><tr>';
+      const headers = Object.keys(results[0]);
+      headers.forEach(h => html += `<th>${h}</th>`);
+      html += '</tr></thead><tbody>';
+
+      results.forEach(row => {
+        html += '<tr>';
+        headers.forEach(h => html += `<td>${row[h] || '-'}</td>`);
+        html += '</tr>';
+      });
+
+      html += '</tbody></table>';
+      container.innerHTML = html;
+      section.classList.add('show');
+    }
+
+    // 가짜 응답 데이터
+    const dummyResults = [
+      { 이름: '홍길동', 생년월일: '1990-01-01', 진료일: '2023-10-20' },
+      { 이름: '김민수', 생년월일: '1985-05-10', 진료일: '2023-10-18' }
+    ];
+
+    // 카드 클릭 테스트
+    document.querySelectorAll('.service-card').forEach(card => {
+      card.addEventListener('click', () => {
+        const service = card.dataset.service;
+        selectCard(service);
+        updateVoiceStatus(`"${service}" 문서를 선택하셨습니다.`);
+        displayResults(dummyResults);
+      });
+    });
+
+    // 마이크 버튼 → 가짜 인식 테스트
+    document.getElementById('mic-button').addEventListener('click', () => {
+      const mockRecognized = prompt('음성으로 인식된 문장을 입력하세요:', '처방전 출력해줘');
+      if (!mockRecognized) return;
+
+      updateVoiceStatus(`"${mockRecognized}" 처리 중...`);
+      if (mockRecognized.includes('진료') || mockRecognized.includes('처방')) {
+        const docType = ['진료확인서', '처방전', '진료영수증'].find(d => mockRecognized.includes(d)) || '처방전';
+        selectCard(docType);
+        updateVoiceStatus(`"${docType}" 문서를 선택하셨습니다.`);
+        displayResults(dummyResults);
+      } else if (mockRecognized.includes('상담')) {
+        document.getElementById('gpt-response').style.display = 'block';
+        document.getElementById('gpt-content').textContent = '물론입니다. 무엇을 도와드릴까요?';
+        updateVoiceStatus('상담 응답 완료');
+      } else {
+        updateVoiceStatus('해당 문서를 찾을 수 없습니다.');
+      }
+    });
+  </script>
+</body>
+</html>
